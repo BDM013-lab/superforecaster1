@@ -234,6 +234,7 @@
   <div class="mode-toggle">
     <button class="mode-btn active" id="btn-train" onclick="setMode('train')">▶ Train</button>
     <button class="mode-btn"        id="btn-ask"   onclick="setMode('ask')">◈ Ask</button>
+    <button class="mode-btn"        id="btn-liveq" onclick="setMode('liveq')">🔴 Live Qs</button>
   </div>
 
   <div class="header-stats">
@@ -320,6 +321,17 @@
   </div>
 
   <!-- ════════════════ ASK PANEL ════════════════ -->
+  <div id="panel-liveq" style="display:none;padding:20px 0">
+    <div style="margin-bottom:16px;display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <div style="font-size:18px;font-weight:600">🔴 Live Forward Questions</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:4px">Real forecasts on unresolved future events — scored when they resolve. Genuine out-of-sample learning.</div>
+      </div>
+      <button class="btn btn-train" onclick="loadLiveQuestions()" style="padding:8px 16px;font-size:12px">↻ Refresh</button>
+    </div>
+    <div id="liveq-list"><div style="color:var(--muted);text-align:center;padding:40px">Click Refresh to load questions.</div></div>
+  </div>
+
   <div id="panel-ask" style="display:none">
     <div class="subtabs">
       <button class="subtab active" id="subtab-ask"     onclick="setAskTab('ask')">Ask a Question</button>
@@ -342,25 +354,9 @@ e.g. &quot;Will Comcast spin off NBCUniversal within 3 years?&quot;
 e.g. &quot;Will a major US music festival declare insolvency in 2025?&quot;
 e.g. &quot;Will Disney+ and Hulu merge into a single app by 2026?&quot;"></textarea>
 
-        <div style="display:flex;gap:12px;margin-top:14px;align-items:flex-end;flex-wrap:wrap">
-          <div style="flex:1;min-width:180px">
-            <div class="lbl">Domain</div>
-            <div class="domain-btns" id="domain-btns"></div>
-          </div>
-          <div>
-            <div class="lbl">Horizon</div>
-            <select id="horizon-select">
-              <option>3 months</option>
-              <option>6 months</option>
-              <option selected>1 year</option>
-              <option>2 years</option>
-              <option>3–5 years</option>
-            </select>
-          </div>
+        <div style="display:flex;gap:12px;margin-top:14px;align-items:flex-end">
           <button class="forecast-btn" id="forecast-btn" onclick="submitForecast()">Forecast ⌘↵</button>
         </div>
-
-        <div style="margin-top:10px;font-size:11px;color:var(--muted);font-family:monospace;display:none" id="bias-note"></div>
       </div>
 
       <!-- Loading -->
@@ -512,8 +508,12 @@ function setMode(m) {
   mode = m;
   document.getElementById('panel-train').style.display = m === 'train' ? '' : 'none';
   document.getElementById('panel-ask').style.display   = m === 'ask'   ? '' : 'none';
+  document.getElementById('panel-liveq').style.display = m === 'liveq' ? '' : 'none';
+  document.getElementById('btn-liveq').classList.toggle('active', m === 'liveq');
+  if (m === 'liveq') loadLiveQuestions();
   document.getElementById('btn-train').classList.toggle('active', m === 'train');
   document.getElementById('btn-ask').classList.toggle('active', m === 'ask');
+  document.getElementById('btn-liveq').classList.toggle('active', m === 'liveq');
 }
 
 function setAskTab(t) {
@@ -540,7 +540,7 @@ function buildDomainButtons() {
 
 function selectDomain(d) {
   selectedDomain = d;
-  buildDomainButtons();
+  // domain buttons removed
   updateBiasNote();
 }
 
@@ -704,7 +704,7 @@ async function submitForecast() {
     const startRes = await fetch('/api/forecast', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question, domain: selectedDomain, horizon }),
+      body: JSON.stringify({ question, domain: 'auto', horizon: 'auto' }),
     });
     if (!startRes.ok) throw new Error(await startRes.text());
     const { jobId } = await startRes.json();
@@ -734,7 +734,7 @@ async function submitForecast() {
 
     renderResult(r, question, horizon);
 
-    const entry = { id: Date.now(), question, domain: selectedDomain, horizon, probability: r.probability, summary: r.summary, full: r };
+    const entry = { id: Date.now(), question, domain: r.domain || 'auto', horizon: r.horizon || 'auto', probability: r.probability, summary: r.summary, full: r };
     forecasts = [entry, ...forecasts].slice(0, 50);
     localStorage.setItem('sf-forecasts', JSON.stringify(forecasts));
     document.getElementById('history-count').textContent = forecasts.length;
@@ -752,10 +752,7 @@ function renderResult(r, question, horizon) {
   const col = probColor(r.probability);
   const pct = (r.probability * 100).toFixed(0);
 
-  document.getElementById('result-pills').innerHTML = `
-    <span class="pill" style="color:${DOMAIN_COLORS[selectedDomain]};border-color:${DOMAIN_COLORS[selectedDomain]}44">${escHtml(selectedDomain)}</span>
-    <span class="pill" style="color:var(--muted);border-color:#44444488">${escHtml(horizon)}</span>
-  `;
+  document.getElementById('result-pills').innerHTML = '';
   document.getElementById('result-question').textContent = question;
 
   document.getElementById('r-prob').textContent = pct + '%';
@@ -854,28 +851,32 @@ function renderHistory() {
     const col = probColor(fc.probability);
     const domCol = DOMAIN_COLORS[fc.domain] || '#888';
     return `
-      <div class="history-item" onclick="loadForecast(${fc.id})">
-        <div class="history-prob" style="color:${col}">${(fc.probability*100).toFixed(0)}%</div>
-        <div class="history-text">
-          <div class="history-q">${escHtml(fc.question)}</div>
-          ${fc.summary ? `<div class="history-summary">${escHtml(fc.summary)}</div>` : ''}
+      <div class="history-item" style="position:relative">
+        <div style="display:flex;align-items:center;gap:12px;width:100%" onclick="loadForecast(${fc.id})" style="cursor:pointer">
+          <div class="history-prob" style="color:${col}">${(fc.probability*100).toFixed(0)}%</div>
+          <div class="history-text">
+            <div class="history-q">${escHtml(fc.question)}</div>
+            ${fc.summary ? `<div class="history-summary">${escHtml(fc.summary)}</div>` : ''}
+          </div>
         </div>
-        <div style="display:flex;gap:6px;flex-shrink:0">
-          <span class="pill" style="color:${domCol};border-color:${domCol}44">${escHtml(fc.domain)}</span>
-          <span class="pill" style="color:var(--muted);border-color:#44444488">${escHtml(fc.horizon)}</span>
-        </div>
+        <button onclick="deleteForecast(${fc.id})" title="Delete" style="flex-shrink:0;background:none;border:1px solid #ff444433;color:#ff6666;border-radius:6px;padding:4px 8px;cursor:pointer;font-size:12px;margin-left:8px" onmouseover="this.style.background='#ff44440f'" onmouseout="this.style.background='none'">✕</button>
       </div>
     `;
   }).join('');
+}
+
+function deleteForecast(id) {
+  forecasts = forecasts.filter(f => f.id !== id);
+  localStorage.setItem('sf-forecasts', JSON.stringify(forecasts));
+  document.getElementById('history-count').textContent = forecasts.length;
+  renderHistory();
 }
 
 function loadForecast(id) {
   const fc = forecasts.find(f => f.id === id);
   if (!fc) return;
   document.getElementById('question-input').value = fc.question;
-  selectedDomain = fc.domain;
-  buildDomainButtons();
-  document.getElementById('horizon-select').value = fc.horizon;
+  // domain/horizon now inferred automatically
   renderResult(fc.full, fc.question, fc.horizon);
   setAskTab('ask');
 }
@@ -895,9 +896,55 @@ function escHtml(str) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// LIVE QUESTIONS
+// ─────────────────────────────────────────────────────────────────────────────
+async function loadLiveQuestions() {
+  const el = document.getElementById('liveq-list');
+  el.innerHTML = '<div style="color:var(--muted);text-align:center;padding:40px">Loading...</div>';
+  try {
+    const res = await fetch('/api/live-questions');
+    const { questions } = await res.json();
+    if (!questions || questions.length === 0) {
+      el.innerHTML = '<div class="card" style="text-align:center;padding:60px;color:var(--muted)">No live questions yet — check back in a few minutes after startup.</div>';
+      return;
+    }
+    el.innerHTML = questions.map(q => {
+      const status = q.status;
+      const col = status === 'resolved' ? (q.outcome ? 'var(--good)' : 'var(--bad)') : 'var(--warn)';
+      const pct  = q.forecast_probability != null ? (q.forecast_probability * 100).toFixed(0) + '%' : '—';
+      const domCol = DOMAIN_COLORS[q.domain] || '#888';
+      const resDate = q.resolution_date ? q.resolution_date.split('T')[0] : '—';
+      return `
+        <div class="card" style="margin-bottom:12px;border-color:${col}33">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+            <div style="flex:1">
+              <div style="font-size:13px;font-weight:500;margin-bottom:6px">${escHtml(q.question)}</div>
+              <div style="font-size:11px;color:var(--muted);margin-bottom:8px">${escHtml(q.context || '')}</div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <span class="pill" style="color:${domCol};border-color:${domCol}44">${escHtml(q.domain)}</span>
+                <span class="pill" style="color:var(--muted)">Resolves: ${resDate}</span>
+                ${status === 'resolved' ? `<span class="pill" style="color:${col}">→ ${q.outcome ? 'YES' : 'NO'} | Brier: ${q.brier_score != null ? q.brier_score.toFixed(3) : '—'}</span>` : `<span class="pill" style="color:var(--warn)">${status.toUpperCase()}</span>`}
+              </div>
+              ${q.resolution ? `<div style="font-size:11px;color:var(--muted);margin-top:8px;font-style:italic">Resolution: ${escHtml(q.resolution)}</div>` : ''}
+              ${q.principle ? `<div style="font-size:11px;color:var(--accent);margin-top:6px">→ Learned: ${escHtml(q.principle)}</div>` : ''}
+            </div>
+            <div style="text-align:right;flex-shrink:0">
+              <div style="font-size:28px;font-weight:700;color:${col};font-family:monospace">${pct}</div>
+              <div style="font-size:10px;color:var(--muted)">FORECAST</div>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('');
+  } catch(e) {
+    el.innerHTML = `<div class="card" style="color:var(--bad)">Error: ${e.message}</div>`;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // INIT
 // ─────────────────────────────────────────────────────────────────────────────
-buildDomainButtons();
+// domain buttons removed
 document.getElementById('history-count').textContent = forecasts.length;
 poll();
 pollInterval = setInterval(poll, 4000); // poll every 4 seconds
