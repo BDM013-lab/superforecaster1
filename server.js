@@ -520,7 +520,7 @@ DOMAIN: ${q.domain} | DIFFICULTY: ${q.difficulty}
 Use outside view (base rate) → inside view (specific factors) → steelman opposite side → final probability.
 
 Respond ONLY in JSON:
-{"outside_view":"...","inside_view":"...","steelman":"...","principle_applied":"...","probability":0.XX,"reasoning_summary":"one sentence"}`, 1500, "claude-haiku-4-5");
+{"outside_view":"...","inside_view":"...","steelman":"...","principle_applied":"...","probability":0.XX,"reasoning_summary":"one sentence"}`, 1500, "claude-sonnet-4-5");
   return safeParseJSON(raw);
 }
 
@@ -541,7 +541,7 @@ ${state.principles.slice(-5).map((p, i) => `${i+1}. ${p}`).join("\n") || "None y
 Extract one NEW concrete forecasting principle. Identify calibration error.
 
 Respond ONLY in JSON:
-{"new_principle":"...","calibration_error":0.XX,"cognitive_error":"...","verdict":"one sentence"}`, 1000, "claude-haiku-4-5");
+{"new_principle":"...","calibration_error":0.XX,"cognitive_error":"...","verdict":"one sentence"}`, 1000, "claude-sonnet-4-5");
   return safeParseJSON(raw);
 }
 
@@ -848,7 +848,7 @@ app.get("/api/framework", (req, res) => {
 
 app.get("/api/brier-history", (req, res) => {
   const valid = state.history.filter(h => typeof h.brier === 'number' && !isNaN(h.brier));
-  if (valid.length === 0) return res.json({ points: [], byDomain: {} });
+  if (valid.length === 0) return res.json({ points: [], byDomain: {}, total: 0, rawTotal: state.history.length });
 
   // Rolling average every 10 sessions
   const WINDOW = 10;
@@ -873,7 +873,7 @@ app.get("/api/brier-history", (req, res) => {
     byDomain[domain] = dp;
   }
 
-  res.json({ points, byDomain, total: valid.length, current: points[points.length - 1]?.avg || null });
+  res.json({ points, byDomain, total: valid.length, rawTotal: state.history.length, current: points[points.length - 1]?.avg || null });
 });
 
 app.get("/api/live-questions", async (req, res) => {
