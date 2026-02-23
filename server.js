@@ -361,9 +361,17 @@ app.post("/api/training/stop", (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WEB SEARCH — fast, focused, single call with strict token budget
-// Returns raw search snippets to feed into the forecaster
+// ASYNC JOB SYSTEM
+// Browser gets a job ID instantly. Work happens in background.
+// Browser polls /api/forecast/:id every 3 seconds until done.
+// This avoids Railway's 30-second HTTP timeout entirely.
 // ─────────────────────────────────────────────────────────────────────────────
+const jobs = new Map(); // jobId -> { status, result, error }
+
+function makeJobId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
 async function searchCurrentNews(question) {
   if (!ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY not set");
   const today = new Date().toISOString().split("T")[0];
@@ -377,11 +385,11 @@ async function searchCurrentNews(question) {
     },
     body: JSON.stringify({
       model: "claude-haiku-4-5",
-      max_tokens: 1500,
+      max_tokens: 1200,
       tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }],
       messages: [{
         role: "user",
-        content: `Today is ${today}. Search for the latest news and facts relevant to this question: "${question}". Find recent articles, deal announcements, earnings data, or analyst commentary. Then write a brief 200-word summary of the most important current facts you found. Be specific — include dates, dollar figures, names, and direct facts.`
+        content: `Today is ${today}. Search for very recent news about: "${question}". Find the latest articles, announcements, or data. Write a concise 150-word factual summary of what you found. Include specific dates, names, and numbers.`
       }]
     }),
   });
@@ -393,28 +401,22 @@ async function searchCurrentNews(question) {
   return textBlocks.join("\n").trim() || "No search results found.";
 }
 
-app.post("/api/forecast", async (req, res) => {
-  const { question, domain, horizon } = req.body;
-  if (!question || !domain || !horizon) {
-    return res.status(400).json({ error: "question, domain, and horizon are required" });
-  }
+async function runForecastJob(jobId, question, domain, horizon) {
+  const job = jobs.get(jobId);
 
   const bias = state.domainBiases[domain] || 0;
   const biasNote = Math.abs(bias) > 0.02
-    ? `\nCALIBRATION CORRECTION: You have been ${bias > 0 ? "overconfident" : "underconfident"} in ${domain} by ~${Math.abs(bias * 100).toFixed(0)}pp. Adjust accordingly.`
+    ? `\nCALIBRATION: You have been ${bias > 0 ? "overconfident" : "underconfident"} in ${domain} by ~${Math.abs(bias * 100).toFixed(0)}pp.`
     : "";
-
-  const frameworkSnippet = state.framework
-    ? state.framework.slice(0, 1500)
-    : null;
-  const context = frameworkSnippet
-    ? `LEARNED FRAMEWORK:\n${frameworkSnippet}`
+  const context = state.framework
+    ? `LEARNED FRAMEWORK:\n${state.framework.slice(0, 1200)}`
     : state.principles.length > 0
-      ? `LEARNED PRINCIPLES (${state.history.length} sessions):\n${state.principles.slice(-12).map((p, i) => `${i+1}. ${p}`).join("\n")}`
-      : "(No training yet.)";
+      ? `LEARNED PRINCIPLES:\n${state.principles.slice(-10).map((p, i) => `${i+1}. ${p}`).join("\n")}`
+      : "(No training yet — applying general superforecasting methodology.)";
 
   try {
-    // Step 1: Fast web search
+    // Step 1: Web search
+    job.phase = "searching";
     addLog(`   🔍 Searching: "${question.slice(0, 55)}..."`, "info");
     let intelligence = "";
     try {
@@ -425,7 +427,9 @@ app.post("/api/forecast", async (req, res) => {
       intelligence = "Live search unavailable — using training knowledge only.";
     }
 
-    // Step 2: Forecast with search results
+    // Step 2: Forecast
+    job.phase = "forecasting";
+    addLog(`   🧠 Forecasting...`, "info");
     const raw = await callClaude(`You are a business superforecaster. Today: ${new Date().toISOString().split("T")[0]}
 
 ${context}
@@ -435,21 +439,51 @@ QUESTION: ${question}
 DOMAIN: ${domain}
 HORIZON: ${horizon}
 
-CURRENT NEWS (from live web search today):
+CURRENT NEWS (live web search):
 ${intelligence}
 
-Use the current news above as your primary factual source. Apply: outside view (base rates) → inside view (current facts) → steelman → calibrated probability.
+Treat the news above as your primary factual source — it supersedes your training knowledge on current events.
+Apply: outside view (base rate) → inside view (specific current facts) → steelman → calibrated probability.
 
-Respond ONLY in valid JSON:
+Respond ONLY in valid JSON — no markdown, no extra text:
 {"outside_view":"...","inside_view":"...","steelman":"...","principles_applied":["..."],"calibration_note":"...","key_facts_used":["...","..."],"bull_case":{"scenario":"...","probability":0.00},"base_case":{"scenario":"...","probability":0.00},"bear_case":{"scenario":"...","probability":0.00},"probability":0.00,"ci_low":0.00,"ci_high":0.00,"key_risks":["...","..."],"what_to_watch":"...","intelligence_summary":"...","summary":"..."}`, 2000);
 
     const result = safeParseJSON(raw);
     result.intelligence_brief = intelligence;
-    res.json(result);
+
+    job.status = "done";
+    job.result = result;
+    addLog(`   ✓ Forecast complete: ${(result.probability * 100).toFixed(0)}%`, "success");
 
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    job.status = "error";
+    job.error = e.message;
+    addLog(`   ✗ Forecast error: ${e.message}`, "error");
   }
+}
+
+// POST — start a forecast job, return job ID immediately
+app.post("/api/forecast", (req, res) => {
+  const { question, domain, horizon } = req.body;
+  if (!question || !domain || !horizon) {
+    return res.status(400).json({ error: "question, domain, and horizon are required" });
+  }
+
+  const jobId = makeJobId();
+  jobs.set(jobId, { status: "running", phase: "starting", result: null, error: null });
+
+  // Fire and forget — runs in background, no timeout risk
+  runForecastJob(jobId, question, domain, horizon);
+
+  // Return immediately with job ID
+  res.json({ jobId });
+});
+
+// GET — poll for job result
+app.get("/api/forecast/:jobId", (req, res) => {
+  const job = jobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: "Job not found" });
+  res.json(job);
 });
 
 app.get("/api/framework", (req, res) => {
