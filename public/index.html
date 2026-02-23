@@ -365,7 +365,7 @@ e.g. &quot;Will Disney+ and Hulu merge into a single app by 2026?&quot;"></texta
 
       <!-- Loading -->
       <div class="card" id="ask-loading" style="display:none;text-align:center;padding:48px">
-        <div style="font-size:11px;letter-spacing:4px;color:var(--accent);text-transform:uppercase;margin-bottom:20px;font-family:monospace">Reasoning through the forecast</div>
+        <div style="font-size:11px;letter-spacing:4px;color:var(--accent);text-transform:uppercase;margin-bottom:20px;font-family:monospace">Searching web · Reading sources · Reasoning</div>
         <div class="dots">
           <div class="dot" style="animation-delay:0s"></div>
           <div class="dot" style="animation-delay:0.18s"></div>
@@ -437,6 +437,16 @@ e.g. &quot;Will Disney+ and Hulu merge into a single app by 2026?&quot;"></texta
         <div class="card" style="margin-top:14px;border-color:rgba(85,136,255,0.2)">
           <div class="lbl" style="color:var(--info)">📡 Leading Indicators to Watch</div>
           <p style="font-size:13px;line-height:1.7" id="r-watch"></p>
+        </div>
+
+        <div class="card" style="margin-top:14px;border-color:rgba(62,207,142,0.2)" id="r-intelligence-card">
+          <div class="lbl" style="color:var(--good)">🌐 Live Intelligence Gathered</div>
+          <div style="font-size:12px;color:var(--warn);font-family:monospace;margin-bottom:10px" id="r-intelligence-summary"></div>
+          <div id="r-key-facts" style="margin-bottom:12px"></div>
+          <details style="cursor:pointer">
+            <summary style="font-size:11px;color:var(--muted);letter-spacing:1px;font-family:monospace;outline:none">▸ FULL INTELLIGENCE BRIEF</summary>
+            <pre id="r-intelligence-brief" style="font-size:11px;color:var(--muted);line-height:1.7;white-space:pre-wrap;margin-top:10px;font-family:Georgia,serif"></pre>
+          </details>
         </div>
 
         <div class="card" style="margin-top:14px" id="r-principles-card">
@@ -686,7 +696,7 @@ async function submitForecast() {
   document.getElementById('ask-loading').style.display = '';
   document.getElementById('ask-error').style.display   = 'none';
   document.getElementById('ask-result').style.display  = 'none';
-  document.getElementById('ask-loading-note').textContent = `Applying learned principles · Domain: ${selectedDomain}`;
+  document.getElementById('ask-loading-note').textContent = `🔍 Searching web for current news · then applying ${state_principles_len} learned principles...`;
   document.getElementById('forecast-btn').disabled = true;
 
   try {
@@ -778,6 +788,22 @@ function renderResult(r, question, horizon) {
   document.getElementById('r-steelman').textContent   = r.steelman || '';
   document.getElementById('r-calibration').textContent = r.calibration_note || '';
   document.getElementById('r-watch').textContent      = r.what_to_watch || '';
+
+  // Intelligence brief
+  const intCard = document.getElementById('r-intelligence-card');
+  if (r.intelligence_brief && r.intelligence_brief.length > 50) {
+    intCard.style.display = '';
+    document.getElementById('r-intelligence-summary').textContent =
+      r.intelligence_summary || 'Live web search completed.';
+    document.getElementById('r-intelligence-brief').textContent = r.intelligence_brief;
+    // Key facts used
+    const facts = r.key_facts_used || [];
+    document.getElementById('r-key-facts').innerHTML = facts.length
+      ? facts.map(f => `<div style="font-size:12px;color:var(--text);display:flex;gap:8px;margin-bottom:5px"><span style="color:var(--good);font-family:monospace">✓</span><span>${escHtml(f)}</span></div>`).join('')
+      : '';
+  } else {
+    intCard.style.display = 'none';
+  }
 
   // Principles applied
   const applied = (r.principles_applied || []).filter(p => p && p !== 'none');
