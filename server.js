@@ -847,8 +847,12 @@ app.get("/api/framework", (req, res) => {
 });
 
 app.get("/api/brier-history", (req, res) => {
-  const valid = state.history.filter(h => typeof h.brier === 'number' && !isNaN(h.brier));
-  if (valid.length === 0) return res.json({ points: [], byDomain: {}, total: 0, rawTotal: state.history.length });
+  // skipFirst lets the UI exclude the Haiku-model sessions (approx sessions 80-300)
+  // which had artificially high Brier scores due to model quality
+  const skipFirst = parseInt(req.query.skip || '0', 10);
+  const allValid = state.history.filter(h => typeof h.brier === 'number' && !isNaN(h.brier));
+  const valid = skipFirst > 0 ? allValid.slice(skipFirst) : allValid;
+  if (valid.length === 0) return res.json({ points: [], byDomain: {}, total: 0, rawTotal: state.history.length, skipped: skipFirst });
 
   // Rolling average every 10 sessions
   const WINDOW = 10;
@@ -873,7 +877,7 @@ app.get("/api/brier-history", (req, res) => {
     byDomain[domain] = dp;
   }
 
-  res.json({ points, byDomain, total: valid.length, rawTotal: state.history.length, current: points[points.length - 1]?.avg || null });
+  res.json({ points, byDomain, total: valid.length, rawTotal: state.history.length, skipped: skipFirst, current: points[points.length - 1]?.avg || null });
 });
 
 app.get("/api/live-questions", async (req, res) => {
