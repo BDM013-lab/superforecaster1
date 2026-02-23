@@ -696,19 +696,41 @@ async function submitForecast() {
   document.getElementById('ask-loading').style.display = '';
   document.getElementById('ask-error').style.display   = 'none';
   document.getElementById('ask-result').style.display  = 'none';
-  document.getElementById('ask-loading-note').textContent = `🔍 Searching web for current news · then applying ${state_principles_len} learned principles...`;
+  document.getElementById('ask-loading-note').textContent = '🔍 Searching web for current news...';
   document.getElementById('forecast-btn').disabled = true;
 
   try {
-    const res = await fetch('/api/forecast', {
+    // Start the job — server responds instantly with a job ID
+    const startRes = await fetch('/api/forecast', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ question, domain: selectedDomain, horizon }),
     });
-    if (!res.ok) throw new Error(await res.text());
-    const r = await res.json();
+    if (!startRes.ok) throw new Error(await startRes.text());
+    const { jobId } = await startRes.json();
 
-    if (r.error) throw new Error(r.error);
+    // Poll every 3 seconds until done
+    const phases = {
+      starting:    '🔍 Starting search...',
+      searching:   '🔍 Searching web for current news...',
+      forecasting: '🧠 Analyzing and forecasting...',
+    };
+    let r = null;
+    for (let attempt = 0; attempt < 60; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      const pollRes = await fetch(`/api/forecast/${jobId}`);
+      if (!pollRes.ok) throw new Error('Lost connection to server');
+      const job = await pollRes.json();
+
+      // Update loading message based on phase
+      const phaseMsg = phases[job.phase] || '⏳ Working...';
+      document.getElementById('ask-loading-note').textContent = phaseMsg;
+
+      if (job.status === 'done') { r = job.result; break; }
+      if (job.status === 'error') throw new Error(job.error);
+    }
+
+    if (!r) throw new Error('Forecast timed out — please try again');
 
     renderResult(r, question, horizon);
 
