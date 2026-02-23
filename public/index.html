@@ -1016,6 +1016,12 @@ async function loadBrierChart() {
       ? `${validN} shown (${skipped} skipped)`
       : validN === rawN ? validN : `${validN} scored / ${rawN} total`;
     document.getElementById('chart-sessions').textContent = sessionLabel;
+    // Show base rate info
+    if (data.baselineBrier) {
+      document.getElementById('chart-current').textContent =
+        (data.current ? data.current.toFixed(3) : '—') +
+        ` (baseline: ${data.baselineBrier.toFixed(3)})`;
+    }
     document.getElementById('chart-current').textContent  = data.current ? data.current.toFixed(3) : '—';
 
     const canvas = document.getElementById('brier-canvas');
@@ -1050,11 +1056,12 @@ async function loadBrierChart() {
     const toY = (v) => PAD.top  + (1 - (v - minB) / (maxB - minB)) * gH;
 
     // ── Shaded quality zones ──────────────────────────────────────────────
+    const baseline = data.baselineBrier || 0.25;
     const zones = [
-      { lo: 0.05, hi: 0.15, color: '#44cc88', label: 'World-class  <0.15' },
-      { lo: 0.15, hi: 0.20, color: '#a8cc44', label: 'Good  0.15–0.20' },
-      { lo: 0.20, hi: 0.25, color: '#f0c040', label: 'Average  0.20–0.25' },
-      { lo: 0.25, hi: 0.30, color: '#e04848', label: 'Worse than chance  >0.25' },
+      { lo: 0.05, hi: 0.15,     color: '#44cc88', label: 'World-class  <0.15' },
+      { lo: 0.15, hi: 0.20,     color: '#a8cc44', label: 'Good  0.15–0.20' },
+      { lo: 0.20, hi: baseline, color: '#f0c040', label: 'Average  0.20–baseline' },
+      { lo: baseline, hi: 0.35, color: '#e04848', label: 'Worse than chance' },
     ];
     for (const z of zones) {
       const y1 = toY(Math.min(z.hi, maxB));
@@ -1067,10 +1074,11 @@ async function loadBrierChart() {
     }
 
     // ── Zone boundary lines ───────────────────────────────────────────────
+    const baseline = data.baselineBrier || 0.25;
     const boundaries = [
-      { v: 0.25, color: '#e04848', label: '0.25 — random chance' },
-      { v: 0.20, color: '#f0c040', label: '0.20 — average analyst' },
-      { v: 0.15, color: '#44cc88', label: '0.15 — good forecaster' },
+      { v: baseline, color: '#e04848', label: `${baseline.toFixed(3)} — random chance (your base rate)` },
+      { v: 0.20,     color: '#f0c040', label: '0.20 — average analyst' },
+      { v: 0.15,     color: '#44cc88', label: '0.15 — good forecaster' },
     ];
     for (const b of boundaries) {
       const y = toY(b.v);
