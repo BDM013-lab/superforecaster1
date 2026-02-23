@@ -846,6 +846,36 @@ app.get("/api/framework", (req, res) => {
   res.json({ framework: state.framework });
 });
 
+app.get("/api/brier-history", (req, res) => {
+  const valid = state.history.filter(h => typeof h.brier === 'number' && !isNaN(h.brier));
+  if (valid.length === 0) return res.json({ points: [], byDomain: {} });
+
+  // Rolling average every 10 sessions
+  const WINDOW = 10;
+  const points = [];
+  for (let i = WINDOW - 1; i < valid.length; i++) {
+    const window = valid.slice(Math.max(0, i - WINDOW + 1), i + 1);
+    const avg = window.reduce((s, h) => s + h.brier, 0) / window.length;
+    points.push({ session: i + 1, avg: parseFloat(avg.toFixed(4)), ts: valid[i].ts });
+  }
+
+  // Per-domain rolling averages (window of 5)
+  const domains = [...new Set(valid.map(h => h.domain))];
+  const byDomain = {};
+  for (const domain of domains) {
+    const dh = valid.filter(h => h.domain === domain);
+    const dp = [];
+    for (let i = 4; i < dh.length; i++) {
+      const window = dh.slice(Math.max(0, i - 4), i + 1);
+      const avg = window.reduce((s, h) => s + h.brier, 0) / window.length;
+      dp.push({ session: i + 1, avg: parseFloat(avg.toFixed(4)) });
+    }
+    byDomain[domain] = dp;
+  }
+
+  res.json({ points, byDomain, total: valid.length, current: points[points.length - 1]?.avg || null });
+});
+
 app.get("/api/live-questions", async (req, res) => {
   try {
     await initLiveQuestionsTable();
