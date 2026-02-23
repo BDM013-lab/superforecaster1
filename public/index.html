@@ -691,7 +691,7 @@ async function toggleTraining() {
 async function submitForecast() {
   const question = document.getElementById('question-input').value.trim();
   if (!question) return;
-  const horizon = document.getElementById('horizon-select').value;
+  const horizon = 'auto';
 
   document.getElementById('ask-loading').style.display = '';
   document.getElementById('ask-error').style.display   = 'none';
