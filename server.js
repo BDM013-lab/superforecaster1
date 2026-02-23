@@ -867,13 +867,18 @@ app.get("/api/brier-history", (req, res) => {
   const valid = skipFirst > 0 ? allValid.slice(skipFirst) : allValid;
   if (valid.length === 0) return res.json({ points: [], byDomain: {}, total: 0, rawTotal: state.history.length, skipped: skipFirst });
 
-  // Rolling average every 10 sessions
-  const WINDOW = 10;
+  // Cumulative average — smoothest possible trend line
+  // Also compute rolling 30-session average for comparison
+  const WINDOW = 30;
   const points = [];
   for (let i = WINDOW - 1; i < valid.length; i++) {
-    const window = valid.slice(Math.max(0, i - WINDOW + 1), i + 1);
-    const avg = window.reduce((s, h) => s + h.brier, 0) / window.length;
-    points.push({ session: i + 1, avg: parseFloat(avg.toFixed(4)), ts: valid[i].ts });
+    // Only plot every 5 sessions to reduce density without losing shape
+    if ((i + 1) % 5 !== 0 && i !== valid.length - 1) continue;
+    const windowSlice = valid.slice(Math.max(0, i - WINDOW + 1), i + 1);
+    const avg = windowSlice.reduce((s, h) => s + h.brier, 0) / windowSlice.length;
+    // Also compute cumulative avg from start
+    const cumulativeAvg = valid.slice(0, i + 1).reduce((s, h) => s + h.brier, 0) / (i + 1);
+    points.push({ session: i + 1, avg: parseFloat(avg.toFixed(4)), cumulative: parseFloat(cumulativeAvg.toFixed(4)), ts: valid[i].ts });
   }
 
   // Per-domain rolling averages (window of 5)
@@ -882,9 +887,10 @@ app.get("/api/brier-history", (req, res) => {
   for (const domain of domains) {
     const dh = valid.filter(h => h.domain === domain);
     const dp = [];
-    for (let i = 4; i < dh.length; i++) {
-      const window = dh.slice(Math.max(0, i - 4), i + 1);
-      const avg = window.reduce((s, h) => s + h.brier, 0) / window.length;
+    for (let i = 9; i < dh.length; i++) {
+      if ((i + 1) % 3 !== 0 && i !== dh.length - 1) continue;
+      const windowSlice = dh.slice(Math.max(0, i - 9), i + 1);
+      const avg = windowSlice.reduce((s, h) => s + h.brier, 0) / windowSlice.length;
       dp.push({ session: i + 1, avg: parseFloat(avg.toFixed(4)) });
     }
     byDomain[domain] = dp;
