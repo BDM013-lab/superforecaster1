@@ -360,6 +360,62 @@ app.post("/api/training/stop", (req, res) => {
   res.json({ ok: true, message: "Training paused" });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// WEB RESEARCH — searches for current news before forecasting
+// Uses Anthropic's built-in web_search tool to gather live intelligence
+// ─────────────────────────────────────────────────────────────────────────────
+async function gatherCurrentIntelligence(question, domain) {
+  if (!ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY not set");
+
+  const today = new Date().toISOString().split("T")[0];
+
+  // Ask Claude to search for relevant current information using web_search tool
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-5",
+      max_tokens: 4000,
+      tools: [{ type: "web_search_20250305", name: "web_search" }],
+      messages: [{
+        role: "user",
+        content: `Today is ${today}. You are a financial intelligence researcher. 
+        
+I need you to search for the most current information about this forecasting question:
+"${question}"
+Domain: ${domain}
+
+Please search for:
+1. The most recent news articles about this topic (last 3-6 months)
+2. Any relevant earnings calls, analyst reports, or executive statements
+3. Regulatory filings, deal announcements, or official press releases
+4. Market conditions or competitive dynamics relevant to this question
+
+Search multiple angles. After searching, write a comprehensive INTELLIGENCE BRIEF summarizing everything you found that is relevant to forecasting this question. Include specific facts, dates, dollar figures, and direct quotes where available. Be thorough — this brief will be used by a forecaster who needs all the current facts.
+
+Format your brief with clear sections:
+- RECENT DEVELOPMENTS (last 6 months)  
+- KEY FACTS & FIGURES
+- WHAT INSIDERS / ANALYSTS ARE SAYING
+- RELEVANT MARKET CONDITIONS
+- WHAT THIS MEANS FOR THE FORECAST`
+      }]
+    }),
+  });
+
+  if (!res.ok) throw new Error(`Search API ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+
+  // Extract all text content from the response (including after tool use)
+  const textBlocks = data.content.filter(c => c.type === "text").map(c => c.text);
+  return textBlocks.join("\n").trim() || "No current intelligence gathered.";
+}
+
 app.post("/api/forecast", async (req, res) => {
   const { question, domain, horizon } = req.body;
   if (!question || !domain || !horizon) {
@@ -370,9 +426,9 @@ app.post("/api/forecast", async (req, res) => {
   const biasNote = Math.abs(bias) > 0.02
     ? `\nCALIBRATION CORRECTION: You have historically been ${bias > 0 ? "overconfident" : "underconfident"} in ${domain} by ~${Math.abs(bias * 100).toFixed(0)}pp. Adjust your final estimate.`
     : "";
-  // Cap framework to avoid prompt bloat / token overrun
+
   const frameworkSnippet = state.framework
-    ? state.framework.slice(0, 2000) + (state.framework.length > 2000 ? '\n[...framework continues]' : '')
+    ? state.framework.slice(0, 2000) + (state.framework.length > 2000 ? "\n[...framework continues]" : "")
     : null;
   const context = frameworkSnippet
     ? `YOUR LEARNED FRAMEWORK:\n${frameworkSnippet}`
@@ -381,6 +437,18 @@ app.post("/api/forecast", async (req, res) => {
       : "(No training yet — applying general superforecasting methodology.)";
 
   try {
+    // Step 1: Gather current intelligence via web search
+    addLog(`   🔍 Searching for current intelligence on: "${question.slice(0, 60)}..."`, "info");
+    let intelligence = "";
+    try {
+      intelligence = await gatherCurrentIntelligence(question, domain);
+      addLog(`   ✓ Intelligence gathered (${intelligence.length} chars)`, "success");
+    } catch (searchErr) {
+      addLog(`   ⚠ Search failed, proceeding without live data: ${searchErr.message}`, "warn");
+      intelligence = "Web search unavailable — forecast based on training knowledge only.";
+    }
+
+    // Step 2: Forecast using gathered intelligence + learned framework
     const raw = await callClaude(
       `You are an expert business superforecaster trained on ${state.history.length} historical questions in Telecom, Media, Live Events, Parks, and Technology.
 
@@ -392,24 +460,46 @@ QUESTION: ${question}
 DOMAIN: ${domain}
 HORIZON: ${horizon}
 
-Apply: outside view → inside view → steelman → scenarios → calibrated final estimate.
+═══════════════════════════════════════════
+CURRENT INTELLIGENCE (gathered via live web search just now):
+═══════════════════════════════════════════
+${intelligence}
+═══════════════════════════════════════════
+
+IMPORTANT: The intelligence brief above contains CURRENT information gathered from live web searches conducted today. This is your primary source of facts. Use it heavily. Do not rely on your training knowledge for specific current facts — the brief above supersedes anything you think you know about recent events.
+
+Now apply your full superforecasting methodology:
+- Outside view: What is the base rate for this class of event?
+- Inside view: What do the CURRENT FACTS in the brief tell you specifically?
+- Steelman: What is the strongest case for the opposite outcome?
+- Calibration: Apply your domain bias correction.
+- Final estimate: A precise probability reflecting all current information.
 
 Respond ONLY in JSON:
 {
-  "outside_view":"...","inside_view":"...","steelman":"...",
+  "outside_view":"...",
+  "inside_view":"...",
+  "steelman":"...",
   "principles_applied":["...","..."],
   "calibration_note":"...",
+  "key_facts_used":["specific fact from intelligence brief","another specific fact","another"],
   "bull_case":{"scenario":"...","probability":0.XX},
   "base_case":{"scenario":"...","probability":0.XX},
   "bear_case":{"scenario":"...","probability":0.XX},
   "probability":0.XX,
-  "ci_low":0.XX,"ci_high":0.XX,
+  "ci_low":0.XX,
+  "ci_high":0.XX,
   "key_risks":["...","...","..."],
-  "what_to_watch":"...",
-  "summary":"one sentence"
+  "what_to_watch":"specific leading indicators based on current situation",
+  "intelligence_summary":"2-3 sentence summary of the most important current facts that drove this forecast",
+  "summary":"one compelling sentence"
 }`, 3000);
 
-    res.json(safeParseJSON(raw));
+    const result = safeParseJSON(raw);
+    // Attach the raw intelligence brief so the UI can show it
+    result.intelligence_brief = intelligence;
+    res.json(result);
+
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
