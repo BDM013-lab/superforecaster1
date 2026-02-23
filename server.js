@@ -192,17 +192,56 @@ async function callClaude(prompt, maxTokens = 2000) {
 
 // Robustly parse JSON from a possibly-truncated response
 function safeParseJSON(raw) {
+  // 1. Direct parse
   try { return JSON.parse(raw); } catch (_) {}
+
+  // 2. Find the opening brace
   const start = raw.indexOf('{');
   if (start === -1) throw new Error('No JSON object in response');
-  const text = raw.slice(start);
-  for (const suffix of ['"}}"', '"}"', '}', '"]}', '"]}}"']) {
-    try { return JSON.parse(text + suffix); } catch (_) {}
+  let text = raw.slice(start);
+
+  // 3. Try common truncation suffixes
+  const suffixes = ['"}', '"},"summary":"..."}', '}', '"}}', '"]}', '"]}}"', '..."}'];
+  for (const s of suffixes) {
+    try { return JSON.parse(text + s); } catch (_) {}
   }
-  const lastKey = text.lastIndexOf(',"');
-  if (lastKey > 0) {
-    try { return JSON.parse(text.slice(0, lastKey) + '}'); } catch (_) {}
+
+  // 4. Count open braces and try to close them
+  let opens = 0;
+  for (const ch of text) {
+    if (ch === '{') opens++;
+    else if (ch === '}') opens--;
   }
+  if (opens > 0) {
+    const closed = text + '}'.repeat(opens);
+    try { return JSON.parse(closed); } catch (_) {}
+    // Also try closing any open string first
+    try { return JSON.parse(text + '"' + '}'.repeat(opens)); } catch (_) {}
+  }
+
+  // 5. Strip back to last complete key-value pair
+  // Find last occurrence of ,"key": pattern and truncate there
+  const lastComma = text.lastIndexOf(',"');
+  if (lastComma > 10) {
+    const truncated = text.slice(0, lastComma) + '}';
+    try { return JSON.parse(truncated); } catch (_) {}
+  }
+
+  // 6. Extract whatever fields we can using regex
+  const result = {};
+  const fieldPattern = /"(\w+)"\s*:\s*("(?:[^"\\]|\\.)*"|\d+\.?\d*|true|false|null|\[(?:[^\[\]])*\])/g;
+  let match;
+  while ((match = fieldPattern.exec(text)) !== null) {
+    try { result[match[1]] = JSON.parse(match[2]); } catch (_) { result[match[1]] = match[2]; }
+  }
+  if (Object.keys(result).length > 0) {
+    // Ensure probability exists and is valid
+    if (result.probability === undefined) result.probability = 0.5;
+    if (result.reasoning_summary === undefined) result.reasoning_summary = "Response truncated";
+    if (result.summary === undefined) result.summary = "Response truncated — please try again";
+    return result;
+  }
+
   throw new Error('Could not parse JSON: ' + raw.slice(0, 200));
 }
 
@@ -226,7 +265,7 @@ DOMAIN: ${q.domain} | DIFFICULTY: ${q.difficulty}
 Use outside view (base rate) → inside view (specific factors) → steelman opposite side → final probability.
 
 Respond ONLY in JSON:
-{"outside_view":"...","inside_view":"...","steelman":"...","principle_applied":"...","probability":0.XX,"reasoning_summary":"one sentence"}`, 800);
+{"outside_view":"...","inside_view":"...","steelman":"...","principle_applied":"...","probability":0.XX,"reasoning_summary":"one sentence"}`, 1500);
   return safeParseJSON(raw);
 }
 
@@ -247,7 +286,7 @@ ${state.principles.slice(-10).map((p, i) => `${i+1}. ${p}`).join("\n") || "None 
 Extract one NEW concrete forecasting principle. Identify calibration error.
 
 Respond ONLY in JSON:
-{"new_principle":"...","calibration_error":0.XX,"cognitive_error":"...","verdict":"one sentence"}`, 500);
+{"new_principle":"...","calibration_error":0.XX,"cognitive_error":"...","verdict":"one sentence"}`, 1000);
   return safeParseJSON(raw);
 }
 
@@ -264,7 +303,7 @@ ${state.principles.map((p, i) => `${i+1}. ${p}`).join("\n")}
 DOMAIN BIASES:
 ${Object.entries(state.domainBiases).map(([d, b]) => `- ${d}: ${b > 0 ? "overconfident" : "underconfident"} by ${Math.abs(b * 100).toFixed(1)}pp`).join("\n")}
 
-Write a complete system prompt (700-900 words, "You are..." format) for forecasting real future business questions. Embed all principles, calibration corrections, and reasoning process. Plain text only.`, 1200);
+Write a complete system prompt (700-900 words, "You are..." format) for forecasting real future business questions. Embed all principles, calibration corrections, and reasoning process. Plain text only.`, 2000);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
