@@ -554,7 +554,7 @@ ${state.principles.slice(-5).map((p, i) => `${i+1}. ${p}`).join("\n") || "None y
 Extract one NEW concrete forecasting principle. Identify calibration error.
 
 Respond ONLY in JSON:
-{"new_principle":"...","calibration_error":0.XX,"cognitive_error":"...","verdict":"one sentence"}`, 1000, "claude-sonnet-4-5");
+{"new_principle":"...","cognitive_error":"...","verdict":"one sentence"}`, 800, "claude-sonnet-4-5");
   return safeParseJSON(raw);
 }
 
@@ -618,8 +618,12 @@ async function runOneQuestion() {
 
   // Update state
   state.principles.push(pm.new_principle);
+  // Compute calibration error directly from data — don't trust model to calculate it
+  // Positive = overconfident (forecast too high), Negative = underconfident
+  const computedCalibrationError = forecast.probability - (q.outcome ? 1 : 0);
   const prevBias = state.domainBiases[q.domain] || 0;
-  state.domainBiases[q.domain] = prevBias * 0.7 + pm.calibration_error * 0.3;
+  // Slow decay (0.9) so bias signal accumulates meaningfully over many sessions
+  state.domainBiases[q.domain] = prevBias * 0.9 + computedCalibrationError * 0.1;
   state.history.push({
     id: q.id, domain: q.domain, difficulty: q.difficulty,
     q: q.q, probability: forecast.probability, outcome: q.outcome,
