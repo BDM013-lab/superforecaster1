@@ -6,14 +6,16 @@
 "use strict";
 
 const express = require("express");
-const fs      = require("fs");
 const path    = require("path");
 const fetch   = require("node-fetch");
+const { Pool } = require("pg");
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
-const STATE_FILE = path.join(__dirname, "data", "state.json");
+
+// Postgres connection — Railway injects DATABASE_URL automatically
+const db = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
@@ -33,33 +35,61 @@ let state = {
   trainPhase:   "idle",
 };
 
-function loadState() {
+// ─────────────────────────────────────────────────────────────────────────────
+// DATABASE — creates table on first run, persists state forever
+// ─────────────────────────────────────────────────────────────────────────────
+async function initDB() {
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS superforecaster_state (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+}
+
+async function loadState() {
   try {
-    if (fs.existsSync(STATE_FILE)) {
-      const raw = fs.readFileSync(STATE_FILE, "utf8");
-      const saved = JSON.parse(raw);
-      state = { ...state, ...saved, isTraining: false, trainPhase: "idle" };
-      addLog(`Loaded state: ${state.history.length} sessions, ${state.principles.length} principles.`, "success");
+    await initDB();
+    const result = await db.query("SELECT key, value FROM superforecaster_state");
+    if (result.rows.length > 0) {
+      const saved = {};
+      for (const row of result.rows) {
+        saved[row.key] = JSON.parse(row.value);
+      }
+      if (saved.principles)   state.principles   = saved.principles;
+      if (saved.domainBiases) state.domainBiases  = saved.domainBiases;
+      if (saved.history)      state.history       = saved.history;
+      if (saved.completedIds) state.completedIds  = saved.completedIds;
+      if (saved.framework)    state.framework     = saved.framework;
+      addLog(`Loaded from database: ${state.history.length} sessions, ${state.principles.length} principles.`, "success");
+    } else {
+      addLog("No saved state found — starting fresh.", "info");
     }
   } catch (e) {
-    addLog(`Could not load state file: ${e.message}`, "warn");
+    addLog(`Could not load from database: ${e.message}`, "warn");
   }
 }
 
-function saveState() {
+async function saveState() {
   try {
     const toSave = {
       principles:   state.principles,
       domainBiases: state.domainBiases,
-      history:      state.history,
+      history:      state.history.slice(-500),
       completedIds: state.completedIds,
       framework:    state.framework,
-      log:          state.log.slice(-200),
     };
-    fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
-    fs.writeFileSync(STATE_FILE, JSON.stringify(toSave, null, 2));
+    for (const [key, value] of Object.entries(toSave)) {
+      await db.query(
+        `INSERT INTO superforecaster_state (key, value, updated_at)
+         VALUES ($1, $2, NOW())
+         ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
+        [key, JSON.stringify(value)]
+      );
+    }
   } catch (e) {
-    addLog(`Save error: ${e.message}`, "error");
+    addLog(`Database save error: ${e.message}`, "error");
   }
 }
 
@@ -500,15 +530,23 @@ app.get("*", (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // START
 // ─────────────────────────────────────────────────────────────────────────────
-loadState();
-app.listen(PORT, () => {
-  console.log(`\n🔮 Superforecaster running on http://localhost:${PORT}`);
-  console.log(`   Training: ${state.history.length} sessions completed`);
-  if (!ANTHROPIC_API_KEY) {
-    console.warn("   ⚠️  ANTHROPIC_API_KEY not set — set it in Railway environment variables");
-  } else {
-    // Auto-start training on boot
-    startTraining();
-    console.log("   ▶ Training loop started automatically");
-  }
+// Load state from DB first, then start server
+loadState().then(() => {
+  app.listen(PORT, () => {
+    console.log(`\n🔮 Superforecaster running on http://localhost:${PORT}`);
+    console.log(`   Training: ${state.history.length} sessions, ${state.principles.length} principles`);
+    if (!ANTHROPIC_API_KEY) {
+      console.warn("   ⚠️  ANTHROPIC_API_KEY not set — set it in Railway environment variables");
+    } else {
+      startTraining();
+      console.log("   ▶ Training loop started automatically");
+    }
+  });
+}).catch(e => {
+  console.error("Failed to load state from database:", e.message);
+  console.log("Starting anyway with empty state...");
+  app.listen(PORT, () => {
+    console.log(`\n🔮 Superforecaster running on http://localhost:${PORT}`);
+    if (ANTHROPIC_API_KEY) startTraining();
+  });
 });
