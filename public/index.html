@@ -1001,7 +1001,9 @@ async function loadBrierChart() {
     const res  = await fetch('/api/brier-history');
     const data = await res.json();
 
-    document.getElementById('chart-sessions').textContent = data.total || 0;
+    const validN = data.total || 0;
+    const rawN   = data.rawTotal || validN;
+    document.getElementById('chart-sessions').textContent = validN === rawN ? validN : `${validN} scored / ${rawN} total`;
     document.getElementById('chart-current').textContent  = data.current ? data.current.toFixed(3) : '—';
 
     const canvas = document.getElementById('brier-canvas');
