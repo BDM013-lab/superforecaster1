@@ -192,49 +192,51 @@ async function initLiveQuestionsTable() {
   `);
 }
 
-async function generateLiveQuestions() {
-  // Generate 3 new forward-looking TMT questions with 30-90 day resolution windows
+async function generateLiveQuestions(existingQuestions) {
   const today = new Date().toISOString().split("T")[0];
   const in30  = new Date(Date.now() + 30  * 86400000).toISOString().split("T")[0];
   const in60  = new Date(Date.now() + 60  * 86400000).toISOString().split("T")[0];
   const in90  = new Date(Date.now() + 90  * 86400000).toISOString().split("T")[0];
 
+  // Step 1: Search for current TMT news to ground question generation in reality
+  addLog("   🔍 Searching for current TMT news to generate grounded questions...", "info");
+  let currentNews = "";
+  try {
+    currentNews = await searchCurrentNews("TMT media technology telecom M&A earnings deals 2026");
+  } catch(e) {
+    addLog("   ⚠ News search failed, generating without live context", "warn");
+  }
+
+  // Build list of existing questions to avoid duplicates
+  const existingList = existingQuestions && existingQuestions.length > 0
+    ? `
+AVOID duplicating these existing questions:
+    ? "\nAVOID duplicating these existing questions:\n" + existingQuestions.map(q => "- " + q).join("\n")
+")}`
+    : "";
+
   const raw = await callClaude(`You are a superforecasting question designer. Today is ${today}.
 
-Generate 3 specific, binary (yes/no), verifiable forecasting questions about TMT (Telecom, Media, Technology) companies that:
-1. Have NOT yet resolved as of today
+CURRENT TMT NEWS (use this to generate grounded, accurate questions):
+${currentNews}
+
+Generate 9 specific, binary (yes/no), verifiable forecasting questions about TMT companies that:
+1. Have NOT yet resolved as of today ${today}
 2. Will definitively resolve by the target date shown
-3. Are about real, named companies and specific measurable outcomes
-4. Cover different domains and timeframes
+3. Are about real, named companies with specific measurable outcomes
+4. Are grounded in the current news above — do not invent metrics that companies no longer report
+5. Cover different companies and domains
+${existingList}
 
-Use these resolution targets:
-- Question 1: resolves by ${in30}
-- Question 2: resolves by ${in60}  
-- Question 3: resolves by ${in90}
+IMPORTANT: Only ask about metrics companies actually report publicly. For example, Netflix no longer reports subscriber counts — ask about revenue or operating income instead.
 
-Focus on: earnings beats/misses, M&A deals closing/failing, subscriber milestones, regulatory decisions, product launches, executive changes.
+Spread questions across these resolution windows (3 questions each):
+- Short term (resolves by ${in30}): 3 questions
+- Medium term (resolves by ${in60}): 3 questions  
+- Long term (resolves by ${in90}): 3 questions
 
-Respond ONLY in JSON:
-[
-  {
-    "domain": "Media|Technology|Telecommunications|Live Events|Parks",
-    "question": "Will [specific company] [specific measurable action] by [date]?",
-    "context": "2-3 sentences of relevant current context that would be known today",
-    "resolution_date": "${in30}"
-  },
-  {
-    "domain": "...",
-    "question": "...",
-    "context": "...",
-    "resolution_date": "${in60}"
-  },
-  {
-    "domain": "...",
-    "question": "...",
-    "context": "...",
-    "resolution_date": "${in90}"
-  }
-]`, 1500);
+Respond ONLY in a JSON array of 9 objects, each with this shape:
+{"domain":"Media|Technology|Telecommunications|Live Events|Parks","question":"Will [company] [specific action] by [date]?","context":"2-3 sentences of current context","resolution_date":"YYYY-MM-DD"}`, 3000);
 
   const questions = safeParseJSON(raw);
   if (!Array.isArray(questions)) throw new Error("Expected array of questions");
@@ -372,10 +374,13 @@ async function seedLiveQuestions() {
     const active = parseInt(count.rows[0].count);
 
     // Keep ~9 active questions at all times (3 per time horizon)
-    if (active >= 6) return;
+    if (active >= 50) return;
 
     addLog(`   🌱 Generating new live questions (${active} active)...`, "info");
-    const questions = await generateLiveQuestions();
+    // Fetch existing question text to avoid semantic duplicates
+    const existing = await db.query(`SELECT question FROM live_questions WHERE status IN ('pending','forecasted')`);
+    const existingTexts = existing.rows.map(r => r.question);
+    const questions = await generateLiveQuestions(existingTexts);
 
     for (const q of questions) {
       if (!q.question || !q.domain || !q.resolution_date) continue;
@@ -653,8 +658,9 @@ function stopTraining() {
 // REST API
 // ─────────────────────────────────────────────────────────────────────────────
 app.get("/api/status", (req, res) => {
-  const avgBrier = state.history.length > 0
-    ? state.history.reduce((s, h) => s + h.brier, 0) / state.history.length : null;
+  const validHistory = state.history.filter(h => typeof h.brier === 'number' && !isNaN(h.brier));
+  const avgBrier = validHistory.length > 0
+    ? validHistory.reduce((s, h) => s + h.brier, 0) / validHistory.length : null;
   res.json({
     isTraining:    state.isTraining,
     trainPhase:    state.trainPhase,
