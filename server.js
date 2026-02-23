@@ -159,6 +159,19 @@ const TRAINING_QUESTIONS = [
   { id:48, domain:"Parks", difficulty:"Medium", asOf:"2015-06-01", q:"Will Shanghai Disneyland open before end of 2016?", context:"Shanghai Disneyland under construction since 2011. Partnership with Shanghai Shendi Group. Multiple delay rumors. Chinese government approvals complex. $5.5B investment.", outcome:true,  resolution:"Shanghai Disneyland opened June 16, 2016, on schedule and within 2016." },
   { id:49, domain:"Parks", difficulty:"Hard",   asOf:"2018-01-01", q:"Will Cedar Fair complete a merger or be acquired by end of 2023?", context:"Cedar Fair has been acquisition speculation target for years. Six Flags rumored as potential acquirer/merger partner. Private equity interest. Cedar Fair strong cash generator.", outcome:true,  resolution:"Cedar Fair and Six Flags Entertainment announced merger May 2023. Deal closed July 2024." },
   { id:50, domain:"Parks", difficulty:"Medium", asOf:"2022-06-01", q:"Will Disney announce a major new theme park destination outside of existing markets before end of 2024?", context:"Disney CEO Bob Chapek under pressure to grow Parks segment. India, Saudi Arabia, and Gulf states rumored. Chapek fired Nov 2022; Iger returned.", outcome:false, resolution:"No new Disney theme park destination outside existing markets was announced by end of 2024." },
+  // ── Balancing questions: NO-outcome weighted to correct 62/38 YES/NO skew ──
+  { id:51, domain:"Telecommunications", difficulty:"Hard",   asOf:"2021-01-01", q:"Will the US government successfully break up Google by end of 2023?", context:"DOJ filed antitrust suit Oct 2020 targeting Google's search dominance. Trial expected in 2023. Remedy phase could take years. Historical breakups (AT&T, Standard Oil) took decades.", outcome:false, resolution:"No breakup occurred by end of 2023. Trial concluded but remedy phase still ongoing." },
+  { id:52, domain:"Media",              difficulty:"Medium", asOf:"2022-01-01", q:"Will CNN+ streaming service reach 2 million subscribers within its first year?", context:"CNN+ launched April 2022 at $5.99/month. WarnerMedia/Discovery merger pending. CNN invested heavily in original programming. Streaming wars intensifying.", outcome:false, resolution:"CNN+ shut down just 29 days after launch in April 2022 following Discovery merger." },
+  { id:53, domain:"Technology",         difficulty:"Hard",   asOf:"2021-06-01", q:"Will Apple's App Store antitrust case result in a court order forcing Apple to allow third-party payment systems by end of 2022?", context:"Epic v Apple trial concluded May 2021. Judge considering whether App Store is an illegal monopoly. Apple faces similar cases in EU and South Korea.", outcome:false, resolution:"Judge ruled mostly in Apple's favor in September 2021. No forced third-party payments by end of 2022." },
+  { id:54, domain:"Media",              difficulty:"Medium", asOf:"2020-01-01", q:"Will Quibi reach 7.4 million paying subscribers by end of 2020?", context:"Quibi launching April 2020 with $1.75B raised. Jeffrey Katzenberg and Meg Whitman leading. Short-form mobile video targeting commuters. Hollywood backing.", outcome:false, resolution:"Quibi shut down in October 2020, having reached only ~500K subscribers. COVID killed the commuter use case." },
+  { id:55, domain:"Technology",         difficulty:"Medium", asOf:"2019-01-01", q:"Will Uber be profitable on a GAAP basis by end of 2020?", context:"Uber IPO'd May 2019 losing $3B/year. Driver costs, insurance, and R&D enormous. Management promised path to profitability. Ride-sharing market still growing.", outcome:false, resolution:"Uber lost $6.8B in 2020 on a GAAP basis. COVID devastated ride volumes." },
+  { id:56, domain:"Live Events",        difficulty:"Hard",   asOf:"2019-06-01", q:"Will a major US music festival (Coachella, Lollapalooza, or Bonnaroo) be cancelled due to financial insolvency by end of 2021?", context:"Festival market overcrowded. Fyre Festival collapse fresh in memory. Some second-tier festivals struggling. Insurance costs rising.", outcome:false, resolution:"None of the major three collapsed. COVID caused postponements but all three survived and returned in 2021." },
+  { id:57, domain:"Telecommunications", difficulty:"Medium", asOf:"2018-01-01", q:"Will T-Mobile's merger with Sprint receive DOJ approval without requiring divestiture of major spectrum assets?", context:"Merger announced April 2018. DOJ historically required divestitures in telecom deals. T-Mobile and Sprint combined would control large spectrum holdings. State AGs opposed.", outcome:false, resolution:"DOJ required divestiture of Boost Mobile and some spectrum to Dish Network as condition of approval." },
+  { id:58, domain:"Technology",         difficulty:"Hard",   asOf:"2020-06-01", q:"Will TikTok be banned or forced to sell to a US buyer by end of 2020?", context:"Trump ordered ByteDance to divest TikTok July 2020. Microsoft then Oracle in acquisition talks. CFIUS reviewing national security implications. Courts involved.", outcome:false, resolution:"No completed sale or ban by end of 2020. Courts blocked enforcement of Trump orders." },
+  { id:59, domain:"Media",              difficulty:"Medium", asOf:"2023-06-01", q:"Will Paramount+ and Showtime successfully merge into a single profitable streaming service by end of 2024?", context:"Paramount announced merging Showtime into Paramount+ in early 2023. Content costs high. Subscriber growth slowing industry-wide. Parent company facing financial pressure.", outcome:false, resolution:"The merger occurred but Paramount+ continued losing money. Parent company Paramount Global agreed to sell to Skydance." },
+  { id:60, domain:"Parks",              difficulty:"Medium", asOf:"2021-01-01", q:"Will Disney World's Magic Kingdom see a return to pre-COVID attendance levels (approximately 20M annually) by end of 2022?", context:"Magic Kingdom was world's most visited park pre-COVID at ~20M. COVID crushed 2020-2021. Capacity limits being lifted. Pent-up demand building.", outcome:false, resolution:"Disney stopped reporting park-level attendance but analysts estimated domestic park attendance was still below 2019 peaks in 2022." },
+  { id:61, domain:"Technology",         difficulty:"Hard",   asOf:"2017-01-01", q:"Will Snap Inc. be acquired by a major tech or media company by end of 2019?", context:"Snap IPO'd Feb 2017 at $17/share. Struggled post-IPO. Facebook/Instagram aggressively copying Stories feature. User growth slowing. Possible acquisition targets: Google, Verizon, Disney.", outcome:false, resolution:"Snap was not acquired by end of 2019. Remained independent, stock trading well below IPO price." },
+  { id:62, domain:"Live Events",        difficulty:"Medium", asOf:"2016-01-01", q:"Will the 2016 Rio Olympics result in significant venue abandonment and financial ruin for the city within 2 years?", context:"Rio faced $12B+ cost overruns, Zika concerns, political crisis, and incomplete facilities. Predictions of a 'white elephant' legacy. Prior Olympics left mixed infrastructure legacies.", outcome:true,  resolution:"Multiple venues were abandoned within months of closing ceremony. Maracana stadium fell into disrepair. Rio declared financial emergency." },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -569,7 +582,7 @@ let trainingTimeout = null;
 async function runOneQuestion() {
   const remaining = TRAINING_QUESTIONS.filter(q => !state.completedIds.includes(q.id));
   if (remaining.length === 0) {
-    addLog("All 50 questions complete — cycling.", "warn");
+    addLog("All training questions complete — cycling.", "warn");
     state.completedIds = [];
   }
 
@@ -877,7 +890,13 @@ app.get("/api/brier-history", (req, res) => {
     byDomain[domain] = dp;
   }
 
-  res.json({ points, byDomain, total: valid.length, rawTotal: state.history.length, skipped: skipFirst, current: points[points.length - 1]?.avg || null });
+  // Calculate actual base rate from history outcomes (YES rate)
+  const yesCount = valid.filter(h => h.outcome === true).length;
+  const baseRate = valid.length > 0 ? yesCount / valid.length : 0.5;
+  // Brier score of always predicting at base rate (the true "random chance" for this question set)
+  const baselineBrier = parseFloat((baseRate * Math.pow(1 - baseRate, 2) + (1 - baseRate) * Math.pow(baseRate, 2)).toFixed(4));
+
+  res.json({ points, byDomain, total: valid.length, rawTotal: state.history.length, skipped: skipFirst, current: points[points.length - 1]?.avg || null, baseRate: parseFloat(baseRate.toFixed(3)), baselineBrier });
 });
 
 app.get("/api/live-questions", async (req, res) => {
