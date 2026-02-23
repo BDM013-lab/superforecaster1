@@ -1074,7 +1074,6 @@ async function loadBrierChart() {
     }
 
     // ── Zone boundary lines ───────────────────────────────────────────────
-    const baseline = data.baselineBrier || 0.25;
     const boundaries = [
       { v: baseline, color: '#e04848', label: `${baseline.toFixed(3)} — random chance (your base rate)` },
       { v: 0.20,     color: '#f0c040', label: '0.20 — average analyst' },
