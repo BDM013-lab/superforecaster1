@@ -323,12 +323,18 @@
 
   <!-- ════════════════ ASK PANEL ════════════════ -->
   <div id="panel-chart" style="display:none;padding:20px 0">
-    <div style="margin-bottom:20px;display:flex;justify-content:space-between;align-items:center">
+    <div style="margin-bottom:20px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
       <div>
         <div style="font-size:18px;font-weight:600">📈 Calibration Progress</div>
         <div style="font-size:12px;color:var(--muted);margin-top:4px">Rolling 10-session average Brier score. Lower is better. 0.25 = random chance.</div>
       </div>
-      <button class="btn btn-train" onclick="loadBrierChart()" style="padding:8px 16px;font-size:12px">↻ Refresh</button>
+      <div style="display:flex;gap:8px;align-items:center">
+        <label style="font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="chart-skip-haiku" onchange="loadBrierChart()" style="cursor:pointer">
+          Skip Haiku period (sessions 80–300)
+        </label>
+        <button class="btn btn-train" onclick="loadBrierChart()" style="padding:8px 16px;font-size:12px">↻ Refresh</button>
+      </div>
     </div>
 
     <!-- Overall chart -->
@@ -998,12 +1004,18 @@ const DOMAIN_COLORS_CHART = {
 
 async function loadBrierChart() {
   try {
-    const res  = await fetch('/api/brier-history');
+    const skipHaiku = document.getElementById('chart-skip-haiku')?.checked;
+    const skipN = skipHaiku ? 80 : 0;
+    const res  = await fetch(`/api/brier-history?skip=${skipN}`);
     const data = await res.json();
 
-    const validN = data.total || 0;
-    const rawN   = data.rawTotal || validN;
-    document.getElementById('chart-sessions').textContent = validN === rawN ? validN : `${validN} scored / ${rawN} total`;
+    const validN  = data.total || 0;
+    const rawN    = data.rawTotal || validN;
+    const skipped = data.skipped || 0;
+    const sessionLabel = skipped > 0
+      ? `${validN} shown (${skipped} skipped)`
+      : validN === rawN ? validN : `${validN} scored / ${rawN} total`;
+    document.getElementById('chart-sessions').textContent = sessionLabel;
     document.getElementById('chart-current').textContent  = data.current ? data.current.toFixed(3) : '—';
 
     const canvas = document.getElementById('brier-canvas');
