@@ -169,7 +169,7 @@ const brier = (p, outcome) => Math.pow(p - (outcome ? 1 : 0), 2);
 // ─────────────────────────────────────────────────────────────────────────────
 // CLAUDE API
 // ─────────────────────────────────────────────────────────────────────────────
-async function callClaude(prompt, maxTokens = 2000) {
+async function callClaude(prompt, maxTokens = 2000, model = "claude-sonnet-4-5") {
   if (!ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY not set");
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -179,7 +179,7 @@ async function callClaude(prompt, maxTokens = 2000) {
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-5",
+      model: model,
       max_tokens: maxTokens,
       messages: [{ role: "user", content: prompt }],
     }),
@@ -251,7 +251,7 @@ async function getForecast(q) {
     ? `\nCALIBRATION: You have been ${bias > 0 ? "overconfident" : "underconfident"} in ${q.domain} by ~${Math.abs(bias * 100).toFixed(0)}pp. Adjust accordingly.`
     : "";
   const principlesText = state.principles.length > 0
-    ? `\nLEARNED PRINCIPLES:\n${state.principles.slice(-12).map((p, i) => `${i+1}. ${p}`).join("\n")}`
+    ? `\nLEARNED PRINCIPLES:\n${state.principles.slice(-6).map((p, i) => `${i+1}. ${p}`).join("\n")}`
     : "";
 
   const raw = await callClaude(
@@ -265,7 +265,7 @@ DOMAIN: ${q.domain} | DIFFICULTY: ${q.difficulty}
 Use outside view (base rate) → inside view (specific factors) → steelman opposite side → final probability.
 
 Respond ONLY in JSON:
-{"outside_view":"...","inside_view":"...","steelman":"...","principle_applied":"...","probability":0.XX,"reasoning_summary":"one sentence"}`, 1500);
+{"outside_view":"...","inside_view":"...","steelman":"...","principle_applied":"...","probability":0.XX,"reasoning_summary":"one sentence"}`, 1500, "claude-haiku-4-5");
   return safeParseJSON(raw);
 }
 
@@ -281,12 +281,12 @@ BRIER: ${brier(forecast.probability, q.outcome).toFixed(4)}
 Reasoning: Outside: ${forecast.outside_view} | Inside: ${forecast.inside_view} | Steelman: ${forecast.steelman}
 
 Existing principles (do not duplicate):
-${state.principles.slice(-10).map((p, i) => `${i+1}. ${p}`).join("\n") || "None yet."}
+${state.principles.slice(-5).map((p, i) => `${i+1}. ${p}`).join("\n") || "None yet."}
 
 Extract one NEW concrete forecasting principle. Identify calibration error.
 
 Respond ONLY in JSON:
-{"new_principle":"...","calibration_error":0.XX,"cognitive_error":"...","verdict":"one sentence"}`, 1000);
+{"new_principle":"...","calibration_error":0.XX,"cognitive_error":"...","verdict":"one sentence"}`, 1000, "claude-haiku-4-5");
   return safeParseJSON(raw);
 }
 
@@ -362,7 +362,7 @@ async function runOneQuestion() {
 
   addLog(`   ✓ ${state.history.length} sessions | ${state.principles.length} principles`, "success");
 
-  if (state.history.length % 5 === 0) {
+  if (state.history.length % 25 === 0) {
     addLog(`   ◉ Regenerating framework (${state.history.length} sessions)...`, "accent");
     try {
       state.framework = await generateFramework();
