@@ -167,6 +167,256 @@ const TRAINING_QUESTIONS = [
 const brier = (p, outcome) => Math.pow(p - (outcome ? 1 : 0), 2);
 
 // ─────────────────────────────────────────────────────────────────────────────
+// LIVE QUESTION SYSTEM
+// Generates forward-looking TMT questions, forecasts them, waits for resolution,
+// then scores them exactly like historical training — real out-of-sample learning.
+// ─────────────────────────────────────────────────────────────────────────────
+async function initLiveQuestionsTable() {
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS live_questions (
+      id SERIAL PRIMARY KEY,
+      domain TEXT NOT NULL,
+      question TEXT NOT NULL,
+      context TEXT NOT NULL,
+      resolution_date DATE NOT NULL,
+      forecast_probability REAL,
+      forecast_reasoning TEXT,
+      outcome BOOLEAN,
+      resolution TEXT,
+      brier_score REAL,
+      principle TEXT,
+      status TEXT DEFAULT 'pending',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      resolved_at TIMESTAMPTZ
+    )
+  `);
+}
+
+async function generateLiveQuestions() {
+  // Generate 3 new forward-looking TMT questions with 30-90 day resolution windows
+  const today = new Date().toISOString().split("T")[0];
+  const in30  = new Date(Date.now() + 30  * 86400000).toISOString().split("T")[0];
+  const in60  = new Date(Date.now() + 60  * 86400000).toISOString().split("T")[0];
+  const in90  = new Date(Date.now() + 90  * 86400000).toISOString().split("T")[0];
+
+  const raw = await callClaude(`You are a superforecasting question designer. Today is ${today}.
+
+Generate 3 specific, binary (yes/no), verifiable forecasting questions about TMT (Telecom, Media, Technology) companies that:
+1. Have NOT yet resolved as of today
+2. Will definitively resolve by the target date shown
+3. Are about real, named companies and specific measurable outcomes
+4. Cover different domains and timeframes
+
+Use these resolution targets:
+- Question 1: resolves by ${in30}
+- Question 2: resolves by ${in60}  
+- Question 3: resolves by ${in90}
+
+Focus on: earnings beats/misses, M&A deals closing/failing, subscriber milestones, regulatory decisions, product launches, executive changes.
+
+Respond ONLY in JSON:
+[
+  {
+    "domain": "Media|Technology|Telecommunications|Live Events|Parks",
+    "question": "Will [specific company] [specific measurable action] by [date]?",
+    "context": "2-3 sentences of relevant current context that would be known today",
+    "resolution_date": "${in30}"
+  },
+  {
+    "domain": "...",
+    "question": "...",
+    "context": "...",
+    "resolution_date": "${in60}"
+  },
+  {
+    "domain": "...",
+    "question": "...",
+    "context": "...",
+    "resolution_date": "${in90}"
+  }
+]`, 1500);
+
+  const questions = safeParseJSON(raw);
+  if (!Array.isArray(questions)) throw new Error("Expected array of questions");
+  return questions;
+}
+
+async function forecastLiveQuestion(liveQ) {
+  // Search for current context then forecast
+  const bias = state.domainBiases[liveQ.domain] || 0;
+  const biasNote = Math.abs(bias) > 0.02
+    ? `\nCALIBRATION: You have been ${bias > 0 ? "overconfident" : "underconfident"} in ${liveQ.domain} by ~${Math.abs(bias * 100).toFixed(0)}pp.`
+    : "";
+  const principles = state.principles.slice(-6).map((p, i) => `${i+1}. ${p}`).join("\n");
+
+  const raw = await callClaude(`You are a superforecaster. Today: ${new Date().toISOString().split("T")[0]}
+${principles ? "\nLEARNED PRINCIPLES:\n" + principles : ""}${biasNote}
+
+QUESTION: ${liveQ.question}
+CONTEXT: ${liveQ.context}
+DOMAIN: ${liveQ.domain}
+RESOLVES BY: ${liveQ.resolution_date}
+
+CRITICAL: This event has NOT yet occurred. Do not assume it has resolved. Forecast the probability it will happen by the resolution date.
+
+Use outside view → inside view → steelman → calibrated probability.
+
+Respond ONLY in JSON:
+{"outside_view":"...","inside_view":"...","steelman":"...","probability":0.XX,"reasoning_summary":"one sentence"}`, 1200, "claude-haiku-4-5");
+
+  return safeParseJSON(raw);
+}
+
+async function resolveExpiredQuestions() {
+  try {
+    await initLiveQuestionsTable();
+    const today = new Date().toISOString().split("T")[0];
+
+    // Find questions past their resolution date that are still pending
+    const expired = await db.query(
+      `SELECT * FROM live_questions WHERE status = 'forecasted' AND resolution_date <= $1`,
+      [today]
+    );
+
+    for (const liveQ of expired.rows) {
+      addLog(`   🔍 Checking resolution: "${liveQ.question.slice(0, 60)}..."`, "info");
+      try {
+        // Search for resolution
+        const searchResult = await searchCurrentNews(liveQ.question + " outcome result resolved");
+
+        // Ask Claude to determine if/how it resolved
+        const resolutionRaw = await callClaude(`Today is ${new Date().toISOString().split("T")[0]}.
+
+QUESTION: ${liveQ.question}
+RESOLUTION DATE: ${liveQ.resolution_date}
+SEARCH RESULTS: ${searchResult}
+
+Based on the search results, has this question definitively resolved YES or NO?
+If you cannot confirm resolution from the search results, say "unresolved".
+
+Respond ONLY in JSON:
+{"resolved": true|false|"unresolved", "outcome": true|false|null, "resolution_description": "what actually happened", "confidence": "high|medium|low"}`, 800, "claude-haiku-4-5");
+
+        const resolution = safeParseJSON(resolutionRaw);
+
+        if (resolution.resolved === "unresolved" || resolution.confidence === "low") {
+          addLog(`   ⏳ Not yet resolvable: "${liveQ.question.slice(0, 50)}..."`, "muted");
+          // Extend by 14 days and check again
+          await db.query(
+            `UPDATE live_questions SET resolution_date = resolution_date + INTERVAL '14 days' WHERE id = $1`,
+            [liveQ.id]
+          );
+          continue;
+        }
+
+        // Score it
+        const forecastP = liveQ.forecast_probability;
+        const outcome   = resolution.outcome;
+        const b         = brier(forecastP, outcome);
+
+        // Run post-mortem to extract principle
+        const fakeQ = {
+          q: liveQ.question, domain: liveQ.domain,
+          asOf: liveQ.created_at.toISOString().split("T")[0],
+          resolution: resolution.resolution_description,
+          outcome,
+        };
+        const fakeForecast = {
+          probability: forecastP,
+          outside_view: liveQ.forecast_reasoning || "",
+          inside_view: "", steelman: "",
+        };
+
+        let pm = { new_principle: null, calibration_error: forecastP - (outcome ? 1 : 0), verdict: "" };
+        try {
+          pm = await getPostMortem(fakeQ, fakeForecast);
+        } catch (e) { /* use defaults */ }
+
+        // Save resolution
+        await db.query(
+          `UPDATE live_questions SET status='resolved', outcome=$1, resolution=$2, brier_score=$3, principle=$4, resolved_at=NOW() WHERE id=$5`,
+          [outcome, resolution.resolution_description, b, pm.new_principle, liveQ.id]
+        );
+
+        // Feed into main training state
+        if (pm.new_principle) {
+          state.principles.push("🔴 LIVE: " + pm.new_principle);
+          const prevBias = state.domainBiases[liveQ.domain] || 0;
+          state.domainBiases[liveQ.domain] = prevBias * 0.7 + pm.calibration_error * 0.3;
+          state.history.push({
+            id: "live_" + liveQ.id, domain: liveQ.domain, difficulty: "Live",
+            q: liveQ.question, probability: forecastP, outcome,
+            brier: b, verdict: pm.verdict || "", principle: pm.new_principle,
+            ts: new Date().toISOString(), isLive: true,
+          });
+          saveState();
+        }
+
+        addLog(`   ✅ LIVE Q resolved: ${outcome ? "YES" : "NO"} | Brier: ${b.toFixed(3)} | "${liveQ.question.slice(0, 50)}..."`, "success");
+
+      } catch (e) {
+        addLog(`   ⚠ Resolution check error: ${e.message}`, "warn");
+      }
+    }
+  } catch (e) {
+    addLog(`Live Q resolution error: ${e.message}`, "error");
+  }
+}
+
+async function seedLiveQuestions() {
+  try {
+    await initLiveQuestionsTable();
+
+    // Check how many pending/forecasted questions we have
+    const count = await db.query(`SELECT COUNT(*) FROM live_questions WHERE status IN ('pending','forecasted')`);
+    const active = parseInt(count.rows[0].count);
+
+    // Keep ~9 active questions at all times (3 per time horizon)
+    if (active >= 6) return;
+
+    addLog(`   🌱 Generating new live questions (${active} active)...`, "info");
+    const questions = await generateLiveQuestions();
+
+    for (const q of questions) {
+      if (!q.question || !q.domain || !q.resolution_date) continue;
+
+      // Insert and immediately forecast
+      const insert = await db.query(
+        `INSERT INTO live_questions (domain, question, context, resolution_date) VALUES ($1,$2,$3,$4) RETURNING id`,
+        [q.domain, q.question, q.context, q.resolution_date]
+      );
+      const liveQ = { id: insert.rows[0].id, ...q };
+
+      try {
+        const forecast = await forecastLiveQuestion(liveQ);
+        await db.query(
+          `UPDATE live_questions SET status='forecasted', forecast_probability=$1, forecast_reasoning=$2 WHERE id=$3`,
+          [forecast.probability, forecast.reasoning_summary, liveQ.id]
+        );
+        addLog(`   📋 Live Q: "${q.question.slice(0, 60)}..." → ${(forecast.probability*100).toFixed(0)}% YES (resolves ${q.resolution_date})`, "accent");
+      } catch (e) {
+        addLog(`   ⚠ Live Q forecast error: ${e.message}`, "warn");
+      }
+    }
+  } catch (e) {
+    addLog(`Live Q seeding error: ${e.message}`, "error");
+  }
+}
+
+// Run resolution checks every 6 hours, seed new questions daily
+function scheduleLiveQuestions() {
+  // Check resolutions every 6 hours
+  setInterval(resolveExpiredQuestions, 6 * 60 * 60 * 1000);
+  // Seed new questions once per day
+  setInterval(seedLiveQuestions, 24 * 60 * 60 * 1000);
+  // Run both immediately on startup (after a short delay)
+  setTimeout(async () => {
+    await resolveExpiredQuestions();
+    await seedLiveQuestions();
+  }, 15000); // 15s after startup
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CLAUDE API
 // ─────────────────────────────────────────────────────────────────────────────
 async function callClaude(prompt, maxTokens = 2000, model = "claude-sonnet-4-5") {
@@ -470,8 +720,35 @@ async function searchCurrentNews(question) {
   return textBlocks.join("\n").trim() || "No search results found.";
 }
 
+async function inferDomainAndHorizon(question) {
+  // Quickly infer domain and horizon from the question text
+  const raw = await callClaude(`Classify this forecasting question:
+"${question}"
+
+Respond ONLY in JSON:
+{"domain":"Telecommunications|Media|Technology|Live Events|Parks","horizon":"3 months|6 months|1 year|2 years|3-5 years"}`, 200, "claude-haiku-4-5");
+  try {
+    return safeParseJSON(raw);
+  } catch(_) {
+    return { domain: "Technology", horizon: "1 year" };
+  }
+}
+
 async function runForecastJob(jobId, question, domain, horizon) {
   const job = jobs.get(jobId);
+
+  // Auto-detect domain and horizon if not provided
+  if (domain === 'auto' || horizon === 'auto') {
+    try {
+      job.phase = "classifying";
+      const inferred = await inferDomainAndHorizon(question);
+      if (domain === 'auto') domain = inferred.domain || "Technology";
+      if (horizon === 'auto') horizon = inferred.horizon || "1 year";
+    } catch(_) {
+      domain = domain === 'auto' ? "Technology" : domain;
+      horizon = horizon === 'auto' ? "1 year" : horizon;
+    }
+  }
 
   const bias = state.domainBiases[domain] || 0;
   const biasNote = Math.abs(bias) > 0.02
@@ -514,15 +791,19 @@ ${intelligence}
 Treat the news above as your primary factual source — it supersedes your training knowledge on current events.
 Apply: outside view (base rate) → inside view (specific current facts) → steelman → calibrated probability.
 
+CRITICAL: Do NOT assume an event has already occurred unless the search results explicitly state it happened, with a specific date and confirmed outcome. If uncertain whether an event has resolved, treat it as still pending and forecast accordingly.
+
 Respond ONLY in valid JSON — no markdown, no extra text:
 {"outside_view":"...","inside_view":"...","steelman":"...","principles_applied":["..."],"calibration_note":"...","key_facts_used":["...","..."],"bull_case":{"scenario":"...","probability":0.00},"base_case":{"scenario":"...","probability":0.00},"bear_case":{"scenario":"...","probability":0.00},"probability":0.00,"ci_low":0.00,"ci_high":0.00,"key_risks":["...","..."],"what_to_watch":"...","intelligence_summary":"...","summary":"..."}`, 3500);
 
     const result = safeParseJSON(raw);
     result.intelligence_brief = intelligence;
 
+    result.domain  = domain;
+    result.horizon = horizon;
     job.status = "done";
     job.result = result;
-    addLog(`   ✓ Forecast complete: ${(result.probability * 100).toFixed(0)}%`, "success");
+    addLog(`   ✓ Forecast complete: ${(result.probability * 100).toFixed(0)}% [${domain}, ${horizon}]`, "success");
 
   } catch (e) {
     job.status = "error";
@@ -559,6 +840,18 @@ app.get("/api/framework", (req, res) => {
   res.json({ framework: state.framework });
 });
 
+app.get("/api/live-questions", async (req, res) => {
+  try {
+    await initLiveQuestionsTable();
+    const result = await db.query(
+      `SELECT * FROM live_questions ORDER BY created_at DESC LIMIT 50`
+    );
+    res.json({ questions: result.rows });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SERVE UI
 // ─────────────────────────────────────────────────────────────────────────────
@@ -578,7 +871,9 @@ loadState().then(() => {
       console.warn("   ⚠️  ANTHROPIC_API_KEY not set — set it in Railway environment variables");
     } else {
       startTraining();
+      scheduleLiveQuestions();
       console.log("   ▶ Training loop started automatically");
+      console.log("   ▶ Live question tracker started");
     }
   });
 }).catch(e => {
