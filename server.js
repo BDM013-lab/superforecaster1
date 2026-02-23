@@ -446,7 +446,7 @@ Treat the news above as your primary factual source — it supersedes your train
 Apply: outside view (base rate) → inside view (specific current facts) → steelman → calibrated probability.
 
 Respond ONLY in valid JSON — no markdown, no extra text:
-{"outside_view":"...","inside_view":"...","steelman":"...","principles_applied":["..."],"calibration_note":"...","key_facts_used":["...","..."],"bull_case":{"scenario":"...","probability":0.00},"base_case":{"scenario":"...","probability":0.00},"bear_case":{"scenario":"...","probability":0.00},"probability":0.00,"ci_low":0.00,"ci_high":0.00,"key_risks":["...","..."],"what_to_watch":"...","intelligence_summary":"...","summary":"..."}`, 2000);
+{"outside_view":"...","inside_view":"...","steelman":"...","principles_applied":["..."],"calibration_note":"...","key_facts_used":["...","..."],"bull_case":{"scenario":"...","probability":0.00},"base_case":{"scenario":"...","probability":0.00},"bear_case":{"scenario":"...","probability":0.00},"probability":0.00,"ci_low":0.00,"ci_high":0.00,"key_risks":["...","..."],"what_to_watch":"...","intelligence_summary":"...","summary":"..."}`, 3500);
 
     const result = safeParseJSON(raw);
     result.intelligence_brief = intelligence;
