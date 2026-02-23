@@ -234,7 +234,8 @@
   <div class="mode-toggle">
     <button class="mode-btn active" id="btn-train" onclick="setMode('train')">▶ Train</button>
     <button class="mode-btn"        id="btn-ask"   onclick="setMode('ask')">◈ Ask</button>
-    <button class="mode-btn"        id="btn-liveq" onclick="setMode('liveq')">🔴 Live Qs</button>
+    <button class="mode-btn"        id="btn-liveq"  onclick="setMode('liveq')">🔴 Live Qs</button>
+    <button class="mode-btn"        id="btn-chart"  onclick="setMode('chart')">📈 Progress</button>
   </div>
 
   <div class="header-stats">
@@ -321,6 +322,45 @@
   </div>
 
   <!-- ════════════════ ASK PANEL ════════════════ -->
+  <div id="panel-chart" style="display:none;padding:20px 0">
+    <div style="margin-bottom:20px;display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <div style="font-size:18px;font-weight:600">📈 Calibration Progress</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:4px">Rolling 10-session average Brier score. Lower is better. 0.25 = random chance.</div>
+      </div>
+      <button class="btn btn-train" onclick="loadBrierChart()" style="padding:8px 16px;font-size:12px">↻ Refresh</button>
+    </div>
+
+    <!-- Overall chart -->
+    <div class="card" style="margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <div style="font-size:13px;font-weight:600">Overall Brier Score</div>
+        <div style="display:flex;gap:16px;font-size:11px;color:var(--muted);font-family:monospace">
+          <span>Current: <span id="chart-current" style="color:var(--accent)">—</span></span>
+          <span>Sessions: <span id="chart-sessions" style="color:var(--accent)">—</span></span>
+        </div>
+      </div>
+      <div style="position:relative;height:180px">
+        <canvas id="brier-canvas" style="width:100%;height:100%"></canvas>
+        <div id="chart-empty" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:13px">Not enough data yet — need 10+ sessions.</div>
+      </div>
+      <!-- Zone legend -->
+      <div style="display:flex;gap:16px;margin-top:12px;font-size:10px;font-family:monospace;flex-wrap:wrap">
+        <span><span style="display:inline-block;width:10px;height:10px;background:#44cc8844;border:1px solid #44cc88;border-radius:2px;vertical-align:middle;margin-right:4px"></span>World-class (&lt;0.15)</span>
+        <span><span style="display:inline-block;width:10px;height:10px;background:#a8cc4444;border:1px solid #a8cc44;border-radius:2px;vertical-align:middle;margin-right:4px"></span>Good (0.15–0.20)</span>
+        <span><span style="display:inline-block;width:10px;height:10px;background:#f0c04044;border:1px solid #f0c040;border-radius:2px;vertical-align:middle;margin-right:4px"></span>Average (0.20–0.25)</span>
+        <span><span style="display:inline-block;width:10px;height:10px;background:#e0484844;border:1px solid #e04848;border-radius:2px;vertical-align:middle;margin-right:4px"></span>Worse than chance (&gt;0.25)</span>
+        <span><span style="display:inline-block;width:20px;height:2px;background:#4488ff;vertical-align:middle;margin-right:4px"></span>Your score</span>
+      </div>
+    </div>
+
+    <!-- Domain breakdown -->
+    <div class="card">
+      <div style="font-size:13px;font-weight:600;margin-bottom:14px">By Domain (5-session rolling avg)</div>
+      <div id="domain-brier-bars"></div>
+    </div>
+  </div>
+
   <div id="panel-liveq" style="display:none;padding:20px 0">
     <div style="margin-bottom:16px;display:flex;justify-content:space-between;align-items:center">
       <div>
@@ -509,11 +549,15 @@ function setMode(m) {
   document.getElementById('panel-train').style.display = m === 'train' ? '' : 'none';
   document.getElementById('panel-ask').style.display   = m === 'ask'   ? '' : 'none';
   document.getElementById('panel-liveq').style.display = m === 'liveq' ? '' : 'none';
+  document.getElementById('panel-chart').style.display = m === 'chart' ? '' : 'none';
   document.getElementById('btn-liveq').classList.toggle('active', m === 'liveq');
+  document.getElementById('btn-chart').classList.toggle('active', m === 'chart');
   if (m === 'liveq') loadLiveQuestions();
+  if (m === 'chart') loadBrierChart();
   document.getElementById('btn-train').classList.toggle('active', m === 'train');
   document.getElementById('btn-ask').classList.toggle('active', m === 'ask');
   document.getElementById('btn-liveq').classList.toggle('active', m === 'liveq');
+  document.getElementById('btn-chart').classList.toggle('active', m === 'chart');
 }
 
 function setAskTab(t) {
@@ -938,6 +982,179 @@ async function loadLiveQuestions() {
     }).join('');
   } catch(e) {
     el.innerHTML = `<div class="card" style="color:var(--bad)">Error: ${e.message}</div>`;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BRIER CHART
+// ─────────────────────────────────────────────────────────────────────────────
+const DOMAIN_COLORS_CHART = {
+  'Telecommunications': '#4fc3f7',
+  'Media':              '#f48fb1',
+  'Technology':         '#a5d6a7',
+  'Live Events':        '#ffcc80',
+  'Parks':              '#ce93d8',
+};
+
+async function loadBrierChart() {
+  try {
+    const res  = await fetch('/api/brier-history');
+    const data = await res.json();
+
+    document.getElementById('chart-sessions').textContent = data.total || 0;
+    document.getElementById('chart-current').textContent  = data.current ? data.current.toFixed(3) : '—';
+
+    const canvas = document.getElementById('brier-canvas');
+    const empty  = document.getElementById('chart-empty');
+
+    if (!data.points || data.points.length < 2) {
+      empty.style.display = '';
+      canvas.style.display = 'none';
+      return;
+    }
+    empty.style.display  = 'none';
+    canvas.style.display = '';
+
+    // Size canvas to its display size
+    const rect = canvas.parentElement.getBoundingClientRect();
+    canvas.width  = rect.width  * devicePixelRatio;
+    canvas.height = rect.height * devicePixelRatio;
+    canvas.style.width  = rect.width  + 'px';
+    canvas.style.height = rect.height + 'px';
+
+    const ctx  = canvas.getContext('2d');
+    ctx.scale(devicePixelRatio, devicePixelRatio);
+    const W = rect.width, H = rect.height;
+    const PAD = { top: 10, right: 120, bottom: 24, left: 44 };
+    const gW = W - PAD.left - PAD.right;
+    const gH = H - PAD.top  - PAD.bottom;
+
+    ctx.clearRect(0, 0, W, H);
+
+    const minB = 0.05, maxB = 0.30;
+    const toX = (i) => PAD.left + (i / (data.points.length - 1)) * gW;
+    const toY = (v) => PAD.top  + (1 - (v - minB) / (maxB - minB)) * gH;
+
+    // ── Shaded quality zones ──────────────────────────────────────────────
+    const zones = [
+      { lo: 0.05, hi: 0.15, color: '#44cc88', label: 'World-class  <0.15' },
+      { lo: 0.15, hi: 0.20, color: '#a8cc44', label: 'Good  0.15–0.20' },
+      { lo: 0.20, hi: 0.25, color: '#f0c040', label: 'Average  0.20–0.25' },
+      { lo: 0.25, hi: 0.30, color: '#e04848', label: 'Worse than chance  >0.25' },
+    ];
+    for (const z of zones) {
+      const y1 = toY(Math.min(z.hi, maxB));
+      const y2 = toY(Math.max(z.lo, minB));
+      if (y1 > PAD.top + gH || y2 < PAD.top) continue;
+      const yClamped1 = Math.max(PAD.top, y1);
+      const yClamped2 = Math.min(PAD.top + gH, y2);
+      ctx.fillStyle = z.color + '18';
+      ctx.fillRect(PAD.left, yClamped1, gW, yClamped2 - yClamped1);
+    }
+
+    // ── Zone boundary lines ───────────────────────────────────────────────
+    const boundaries = [
+      { v: 0.25, color: '#e04848', label: '0.25 — random chance' },
+      { v: 0.20, color: '#f0c040', label: '0.20 — average analyst' },
+      { v: 0.15, color: '#44cc88', label: '0.15 — good forecaster' },
+    ];
+    for (const b of boundaries) {
+      const y = toY(b.v);
+      if (y < PAD.top || y > PAD.top + gH) continue;
+      // Solid boundary line
+      ctx.strokeStyle = b.color + 'aa';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([]);
+      ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(PAD.left + gW, y); ctx.stroke();
+      // Left-side value label
+      ctx.fillStyle = b.color;
+      ctx.font = 'bold 9px monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText(b.v.toFixed(2), PAD.left - 4, y + 3);
+      // Right-side text label
+      ctx.fillStyle = b.color + 'cc';
+      ctx.font = '9px monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText(b.label.split('—')[1].trim(), PAD.left + gW + 4, y + 3);
+    }
+    ctx.setLineDash([]);
+
+    // Shaded area under line
+    const grad = ctx.createLinearGradient(0, PAD.top, 0, PAD.top + gH);
+    grad.addColorStop(0, '#4488ff22');
+    grad.addColorStop(1, '#4488ff04');
+    ctx.beginPath();
+    ctx.moveTo(toX(0), PAD.top + gH);
+    data.points.forEach((p, i) => ctx.lineTo(toX(i), toY(p.avg)));
+    ctx.lineTo(toX(data.points.length - 1), PAD.top + gH);
+    ctx.closePath();
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    // Main line
+    ctx.beginPath();
+    ctx.strokeStyle = '#4488ff';
+    ctx.lineWidth = 2;
+    ctx.lineJoin = 'round';
+    data.points.forEach((p, i) => i === 0 ? ctx.moveTo(toX(i), toY(p.avg)) : ctx.lineTo(toX(i), toY(p.avg)));
+    ctx.stroke();
+
+    // Dots at each point (sparse — every 25)
+    ctx.fillStyle = '#4488ff';
+    data.points.forEach((p, i) => {
+      if (i % 25 !== 0 && i !== data.points.length - 1) return;
+      ctx.beginPath();
+      ctx.arc(toX(i), toY(p.avg), 3, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    // X-axis session labels
+    ctx.fillStyle = 'rgba(255,255,255,0.3)';
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'center';
+    const step = Math.max(1, Math.floor(data.points.length / 5));
+    for (let i = 0; i < data.points.length; i += step) {
+      ctx.fillText(data.points[i].session, toX(i), H - 4);
+    }
+    // Always label last
+    const last = data.points[data.points.length - 1];
+    ctx.fillText(last.session, toX(data.points.length - 1), H - 4);
+
+    // Domain breakdown bars
+    const domEl = document.getElementById('domain-brier-bars');
+    const domEntries = Object.entries(data.byDomain);
+    if (domEntries.length === 0) {
+      domEl.innerHTML = '<div style="color:var(--muted);font-size:12px">Not enough domain data yet.</div>';
+    } else {
+      domEl.innerHTML = domEntries.map(([domain, points]) => {
+        if (!points.length) return '';
+        const current = points[points.length - 1].avg;
+        const color   = DOMAIN_COLORS_CHART[domain] || '#888';
+        const pct     = Math.min(100, Math.max(0, (current / 0.30) * 100));
+        const trend   = points.length > 1
+          ? (points[points.length - 1].avg - points[points.length - 5 < 0 ? 0 : points.length - 5].avg)
+          : 0;
+        const trendStr = trend < -0.005 ? '↓ improving' : trend > 0.005 ? '↑ worsening' : '→ stable';
+        const trendCol = trend < -0.005 ? 'var(--good)' : trend > 0.005 ? 'var(--bad)' : 'var(--muted)';
+        return `
+          <div style="margin-bottom:14px">
+            <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px">
+              <span style="font-size:12px;color:${color}">${escHtml(domain)}</span>
+              <div style="display:flex;gap:12px;font-size:11px;font-family:monospace">
+                <span style="color:${trendCol}">${trendStr}</span>
+                <span style="color:var(--accent)">${current.toFixed(3)}</span>
+              </div>
+            </div>
+            <div style="height:6px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden">
+              <div style="height:100%;width:${pct.toFixed(1)}%;background:${color};border-radius:3px;transition:width 0.6s ease"></div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+  } catch(e) {
+    console.error('Chart error:', e);
   }
 }
 
