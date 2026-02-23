@@ -356,7 +356,8 @@
         <span><span style="display:inline-block;width:10px;height:10px;background:#a8cc4444;border:1px solid #a8cc44;border-radius:2px;vertical-align:middle;margin-right:4px"></span>Good (0.15–0.20)</span>
         <span><span style="display:inline-block;width:10px;height:10px;background:#f0c04044;border:1px solid #f0c040;border-radius:2px;vertical-align:middle;margin-right:4px"></span>Average (0.20–0.25)</span>
         <span><span style="display:inline-block;width:10px;height:10px;background:#e0484844;border:1px solid #e04848;border-radius:2px;vertical-align:middle;margin-right:4px"></span>Worse than chance (&gt;0.25)</span>
-        <span><span style="display:inline-block;width:20px;height:2px;background:#4488ff;vertical-align:middle;margin-right:4px"></span>Your score</span>
+        <span><span style="display:inline-block;width:20px;height:2.5px;background:#4488ff;vertical-align:middle;margin-right:4px"></span>30-session rolling avg</span>
+        <span><span style="display:inline-block;width:20px;height:1.5px;background:#4488ff44;vertical-align:middle;margin-right:4px"></span>Cumulative avg</span>
       </div>
     </div>
 
@@ -1051,7 +1052,13 @@ async function loadBrierChart() {
 
     ctx.clearRect(0, 0, W, H);
 
-    const minB = 0.05, maxB = 0.30;
+    // Dynamically set Y axis based on actual data range with padding
+    const allVals = data.points.flatMap(p => [p.avg, p.cumulative]).filter(v => v !== undefined);
+    const dataMin = Math.min(...allVals);
+    const dataMax = Math.max(...allVals);
+    const pad = Math.max(0.03, (dataMax - dataMin) * 0.2);
+    const minB = Math.max(0, Math.round((dataMin - pad) * 20) / 20);  // round to nearest 0.05
+    const maxB = Math.min(1, Math.round((dataMax + pad) * 20) / 20);
     const toX = (i) => PAD.left + (i / (data.points.length - 1)) * gW;
     const toY = (v) => PAD.top  + (1 - (v - minB) / (maxB - minB)) * gH;
 
@@ -1100,34 +1107,66 @@ async function loadBrierChart() {
     }
     ctx.setLineDash([]);
 
-    // Shaded area under line
+    // Helper: draw a smooth bezier line through points
+    function drawSmooth(pts, yKey) {
+      if (pts.length < 2) return;
+      ctx.beginPath();
+      ctx.moveTo(toX(0), toY(pts[0][yKey]));
+      for (let i = 1; i < pts.length - 1; i++) {
+        const cpx = (toX(i - 1) + toX(i)) / 2;
+        const cpy = (toY(pts[i-1][yKey]) + toY(pts[i][yKey])) / 2;
+        ctx.quadraticCurveTo(toX(i - 1), toY(pts[i-1][yKey]), cpx, cpy);
+      }
+      ctx.lineTo(toX(pts.length - 1), toY(pts[pts.length - 1][yKey]));
+      ctx.stroke();
+    }
+
+    // Shaded area under rolling avg line
     const grad = ctx.createLinearGradient(0, PAD.top, 0, PAD.top + gH);
-    grad.addColorStop(0, '#4488ff22');
+    grad.addColorStop(0, '#4488ff18');
     grad.addColorStop(1, '#4488ff04');
     ctx.beginPath();
     ctx.moveTo(toX(0), PAD.top + gH);
-    data.points.forEach((p, i) => ctx.lineTo(toX(i), toY(p.avg)));
+    data.points.forEach((p, i) => {
+      const x = toX(i), y = toY(p.avg);
+      if (i === 0) ctx.lineTo(x, y);
+      else {
+        const px = toX(i-1), py = toY(data.points[i-1].avg);
+        const cpx = (px + x) / 2;
+        ctx.quadraticCurveTo(px, py, cpx, (py + y) / 2);
+        ctx.lineTo(x, y);
+      }
+    });
     ctx.lineTo(toX(data.points.length - 1), PAD.top + gH);
     ctx.closePath();
     ctx.fillStyle = grad;
     ctx.fill();
 
-    // Main line
-    ctx.beginPath();
-    ctx.strokeStyle = '#4488ff';
-    ctx.lineWidth = 2;
-    ctx.lineJoin = 'round';
-    data.points.forEach((p, i) => i === 0 ? ctx.moveTo(toX(i), toY(p.avg)) : ctx.lineTo(toX(i), toY(p.avg)));
-    ctx.stroke();
+    // Cumulative average line (thinner, more transparent)
+    if (data.points[0].cumulative !== undefined) {
+      ctx.strokeStyle = '#4488ff44';
+      ctx.lineWidth = 1.5;
+      ctx.lineJoin = 'round';
+      drawSmooth(data.points, 'cumulative');
+    }
 
-    // Dots at each point (sparse — every 25)
+    // Rolling 30-session average line (main bold line)
+    ctx.strokeStyle = '#4488ff';
+    ctx.lineWidth = 2.5;
+    ctx.lineJoin = 'round';
+    drawSmooth(data.points, 'avg');
+
+    // End dot only
+    const lastPt = data.points[data.points.length - 1];
     ctx.fillStyle = '#4488ff';
-    data.points.forEach((p, i) => {
-      if (i % 25 !== 0 && i !== data.points.length - 1) return;
-      ctx.beginPath();
-      ctx.arc(toX(i), toY(p.avg), 3, 0, Math.PI * 2);
-      ctx.fill();
-    });
+    ctx.beginPath();
+    ctx.arc(toX(data.points.length - 1), toY(lastPt.avg), 4, 0, Math.PI * 2);
+    ctx.fill();
+    // Value label at end
+    ctx.fillStyle = '#4488ffcc';
+    ctx.font = 'bold 10px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(lastPt.avg.toFixed(3), toX(data.points.length - 1) - 8, toY(lastPt.avg) - 6);
 
     // X-axis session labels
     ctx.fillStyle = 'rgba(255,255,255,0.3)';
