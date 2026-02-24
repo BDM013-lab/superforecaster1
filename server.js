@@ -875,6 +875,25 @@ app.get("/api/framework", (req, res) => {
   res.json({ framework: state.framework });
 });
 
+app.get("/api/principles", (req, res) => {
+  res.json({ principles: state.principles, total: state.principles.length });
+});
+
+// Export everything needed to bootstrap the standalone app
+app.get("/api/export", (req, res) => {
+  const validHistory = state.history.filter(h => typeof h.brier === 'number' && !isNaN(h.brier));
+  const avgBrier = validHistory.length > 0
+    ? validHistory.reduce((s, h) => s + h.brier, 0) / validHistory.length : null;
+  res.json({
+    framework:    state.framework,
+    principles:   state.principles,          // ALL principles, not just last 10
+    domainBiases: state.domainBiases,
+    sessions:     state.history.length,
+    avgBrier:     avgBrier ? parseFloat(avgBrier.toFixed(4)) : null,
+    exportedAt:   new Date().toISOString(),
+  });
+});
+
 // One-time reset endpoint for domain biases
 app.post("/api/admin/reset-biases", async (req, res) => {
   state.domainBiases = {};
