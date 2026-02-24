@@ -532,9 +532,15 @@ DOMAIN: ${q.domain} | DIFFICULTY: ${q.difficulty}
 
 Use outside view (base rate) → inside view (specific factors) → steelman opposite side → final probability.
 
+IMPORTANT: The "probability" field must be a decimal number between 0.00 and 1.00. Example: 0.65 means 65% chance of YES.
+
 Respond ONLY in JSON:
-{"outside_view":"...","inside_view":"...","steelman":"...","principle_applied":"...","probability":0.XX,"reasoning_summary":"one sentence"}`, 1500, "claude-sonnet-4-5");
-  return safeParseJSON(raw);
+{"outside_view":"...","inside_view":"...","steelman":"...","principle_applied":"...","probability":0.65,"reasoning_summary":"one sentence"}`, 1000, "claude-sonnet-4-5");
+  const parsed = safeParseJSON(raw);
+  if (parsed.probability === undefined) {
+    addLog(`   ⚠ probability missing from response — keys: ${Object.keys(parsed).join(', ')}`, "warn");
+  }
+  return parsed;
 }
 
 async function getPostMortem(q, forecast) {
@@ -596,7 +602,14 @@ async function runOneQuestion() {
   let forecast;
   try {
     forecast = await getForecast(q);
-    addLog(`   Forecast: ${(forecast.probability * 100).toFixed(0)}% YES — "${forecast.reasoning_summary}"`, "data");
+    // Sanitize probability — model sometimes returns it under a different key or as a string
+    if (forecast.probability === undefined || forecast.probability === null) {
+      // Try common alternative field names
+      forecast.probability = forecast.prob ?? forecast.p ?? forecast.probability_yes ?? 0.5;
+    }
+    // Ensure it's a valid number between 0 and 1
+    forecast.probability = Math.max(0, Math.min(1, parseFloat(forecast.probability) || 0.5));
+    addLog(`   Forecast: ${(forecast.probability * 100).toFixed(0)}% YES — "${forecast.reasoning_summary || 'no summary'}"`, "data");
   } catch (e) {
     addLog(`   Forecast error: ${e.message}`, "error");
     return;
@@ -861,6 +874,14 @@ app.get("/api/forecast/:jobId", (req, res) => {
 
 app.get("/api/framework", (req, res) => {
   res.json({ framework: state.framework });
+});
+
+// One-time reset endpoint for domain biases
+app.post("/api/admin/reset-biases", async (req, res) => {
+  state.domainBiases = {};
+  await saveState();
+  addLog("Domain biases reset to zero — will rebuild from new training sessions.", "warn");
+  res.json({ ok: true, message: "Domain biases cleared. Will rebuild over next ~100 sessions." });
 });
 
 app.get("/api/brier-history", (req, res) => {
